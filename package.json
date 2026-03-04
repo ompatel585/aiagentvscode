@@ -1,7 +1,7 @@
 {
   "name": "om-ai-pro",
   "displayName": "Om AI Pro",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -30,6 +30,35 @@
           "type": "webview"
         }
       ]
+    },
+    "commands": [
+      {
+        "command": "om-ai.openRules",
+        "title": "Om AI: Open Project Rules (.om-ai-rules.md)",
+        "category": "Om AI"
+      },
+      {
+        "command": "om-ai.openChat",
+        "title": "Om AI: Open Chat",
+        "category": "Om AI"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "om-ai.openChat",
+          "group": "om-ai@1",
+          "when": "editorHasSelection"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "om-ai.openRules"
+        },
+        {
+          "command": "om-ai.openChat"
+        }
+      ]
     }
   },
   "scripts": {
@@ -39,6 +68,7 @@
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
     "axios": "^1.13.6",
+    "openai": "^6.25.0",
     "path": "^0.12.7"
   },
   "devDependencies": {

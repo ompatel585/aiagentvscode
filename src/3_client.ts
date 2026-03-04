@@ -1,6 +1,12 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "AIzaSyCsUW2S4cUL7I9NFDfKS-qPjWOTdGgQiWU");
+const genAI = new GoogleGenerativeAI(
+    process.env.GEMINI_API_KEY!
+);
+
+/* ==============================
+   BRAIN (code generation)
+============================== */
 
 export async function callBrain(payload: any) {
 
@@ -33,14 +39,12 @@ Rules:
 - Return JSON only
 - No explanation
 - No markdown
-- Only modify existing files
 
 Instruction:
 ${JSON.stringify(payload)}
 `;
 
     const result = await model.generateContent(prompt);
-
     const text = result.response.text();
 
     console.log("========== RAW MODEL RESPONSE ==========");
@@ -62,6 +66,26 @@ ${JSON.stringify(payload)}
     }
 }
 
-export async function callEmbeddingAPI(text: string) {
-    return [];
+/* ==============================
+   EMBEDDINGS
+============================== */
+
+export async function callEmbeddingAPI(text: string): Promise<number[]> {
+
+    try {
+
+        const model = genAI.getGenerativeModel({
+            model: "text-embedding-004"
+        });
+
+        const result = await model.embedContent(text);
+
+        return result.embedding.values;
+
+    } catch (err) {
+
+        console.error("Embedding error:", err);
+        return [];
+
+    }
 }

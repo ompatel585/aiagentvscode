@@ -11,14 +11,32 @@ export async function applyAstSafePatches(
     for (const patch of patches) {
 
         const fullPath = path.join(root, patch.path);
-        if (!fs.existsSync(fullPath)) continue;
+
+        // CREATE FILE SUPPORT
+        if (!fs.existsSync(fullPath)) {
+
+            const dir = path.dirname(fullPath);
+
+            if (!fs.existsSync(dir)) {
+                fs.mkdirSync(dir, { recursive: true });
+            }
+
+            fs.writeFileSync(fullPath, "");
+        }
 
         const original = fs.readFileSync(fullPath, 'utf-8');
         let updated = original;
 
         for (const edit of patch.edits) {
+
             const lines = updated.split('\n');
-            lines.splice(edit.startLine, edit.endLine - edit.startLine, edit.newText);
+
+            lines.splice(
+                edit.startLine,
+                edit.endLine - edit.startLine,
+                edit.newText
+            );
+
             updated = lines.join('\n');
         }
 
@@ -30,14 +48,20 @@ export async function applyAstSafePatches(
         );
 
         const diagnostics = ts.getPreEmitDiagnostics(
-    ts.createProgram({
-        rootNames: [patch.path],
-        options: {}
-    })
-);
+            ts.createProgram({
+                rootNames: [patch.path],
+                options: {}
+            })
+        );
 
-if (diagnostics.length === 0) {
+        if (diagnostics.length === 0) {
+
             fs.writeFileSync(fullPath, updated);
+
+        } else {
+
+            console.log("Patch rejected (TS errors):", patch.path);
+
         }
     }
 }

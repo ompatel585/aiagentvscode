@@ -1,297 +1,1890 @@
-### ✅ FULL FILE STRUCTURE
 
-```
-om-ai-pro/
-├── extension/
-│   ├── src/
-│   │   ├── 1_extension.ts
-│   │   ├── 2_indexer.ts
-│   │   ├── 3_client.ts
-│   │   ├── 4_patcher.ts
-│   │   ├── 5_types.ts
-│   │   ├── 6_relevance.ts
-│   │   ├── 7_summary.ts
-│   │   ├── 8_embeddings.ts
-│   │   ├── 9_vectorStore.ts
-│   │   ├── 10_retryLoop.ts
-│   │   ├── 11_astPatcher.ts
-│   │   ├── 12_diffPreview.ts
-│   │   ├── 13_terminalTool.ts
-│   │   ├── 14_testRunner.ts
-│   │   ├── chat/
-│   │   │   ├── panel.ts
-│   │   │   ├── view.html
-│   │   │   └── view.js
-│   ├── package.json
-│   └── tsconfig.json
-```
 
----
+===== FILE: .gitignore =====
 
-# 1️⃣ 1_extension.ts
+node_modules
+.env
 
-```ts
-import * as vscode from 'vscode';
-import { ensureProjectSummary } from './7_summary';
-import { semanticSearch } from './8_embeddings';
-import { runWithRetry } from './10_retryLoop';
-import { showDiffPreview } from './12_diffPreview';
-import { applyAstSafePatches } from './11_astPatcher';
-import { runTests } from './14_testRunner';
-import { ChatPanel } from './chat/panel';
+===== FILE: .vscode\launch.json =====
 
-export function activate(context: vscode.ExtensionContext) {
-
-    context.subscriptions.push(
-        vscode.commands.registerCommand(
-            'om-ai-pro.openChat',
-            () => ChatPanel.createOrShow(context)
-        )
-    );
-
-    ChatPanel.onMessage(async (instruction: string) => {
-
-        const apiKey = await context.secrets.get('OM_AI_KEY');
-        if (!apiKey) return;
-
-        const summary = await ensureProjectSummary();
-        const semanticContext = await semanticSearch(instruction);
-
-        const result = await runWithRetry({
-            instruction,
-            summary,
-            semanticContext
-        });
-
-        if (!result.success) {
-            vscode.window.showErrorMessage("Agent failed");
-            return;
-        }
-
-        const root = vscode.workspace.workspaceFolders![0].uri.fsPath;
-
-        const approved = await showDiffPreview(result.changes, root);
-        if (!approved) return;
-
-        await applyAstSafePatches(result.changes, root);
-
-        await runTests(root);
-    });
-}
-```
-
----
-
-# 2️⃣ 2_indexer.ts
-
-```ts
-import * as vscode from 'vscode';
-
-export async function indexProject() {
-    return vscode.workspace.findFiles(
-        '**/*.{ts,tsx,js,jsx}',
-        '**/{node_modules,dist,.git}/**'
-    );
-}
-```
-
----
-
-# 3️⃣ 3_client.ts
-
-```ts
-import axios from 'axios';
-
-export async function callBrain(payload: any) {
-
-    const res = await axios.post(
-        'https://api.openai.com/v1/chat/completions',
-        {
-            model: 'gpt-5-nano',
-            messages: [
-                { role: 'system', content: 'Return structured JSON patches only.' },
-                { role: 'user', content: JSON.stringify(payload) }
-            ],
-            temperature: 0
-        },
-        {
-            headers: {
-                Authorization: `Bearer ${process.env.OM_AI_KEY}`
-            }
-        }
-    );
-
-    try {
-        return JSON.parse(res.data.choices[0].message.content);
-    } catch {
-        return { success: false, changes: [] };
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run Extension",
+      "type": "extensionHost",
+      "request": "launch",
+      "runtimeExecutable": "${execPath}",
+      "args": [
+        "--extensionDevelopmentPath=${workspaceFolder}"
+      ]
     }
+  ]
 }
 
-export async function callEmbeddingAPI(text: string) {
+===== FILE: buildindex.js =====
 
-    const res = await axios.post(
-        'https://api.openai.com/v1/embeddings',
-        {
-            model: 'text-embedding-3-small',
-            input: text
-        },
-        {
-            headers: {
-                Authorization: `Bearer ${process.env.OM_AI_KEY}`
+const fs = require("fs");
+const path = require("path");
+
+const ROOT_DIR = process.cwd();
+const OUTPUT_FILE = path.join(ROOT_DIR, "index.txt");
+
+const IGNORE_DIRS = new Set(["node_modules", ".git", ".next", "dist", "build"]);
+const IGNORE_FILES = new Set([".env", "index.txt"]);
+
+function walk(dir, fileList = []) {
+    const items = fs.readdirSync(dir);
+
+    for (const item of items) {
+        const fullPath = path.join(dir, item);
+        const stat = fs.statSync(fullPath);
+
+        if (stat.isDirectory()) {
+            if (!IGNORE_DIRS.has(item)) {
+                walk(fullPath, fileList);
+            }
+        } else {
+            if (!IGNORE_FILES.has(item)) {
+                fileList.push(fullPath);
             }
         }
-    );
+    }
 
-    return res.data.data[0].embedding;
-}
-```
-
----
-
-# 4️⃣ 4_patcher.ts
-
-```ts
-export {};
-```
-
----
-
-# 5️⃣ 5_types.ts
-
-```ts
-export interface FileEdit {
-    startLine: number;
-    endLine: number;
-    newText: string;
+    return fileList;
 }
 
-export interface FilePatch {
-    path: string;
-    edits: FileEdit[];
-}
+function buildIndex() {
+    const files = walk(ROOT_DIR);
 
-export interface BrainResponse {
-    success: boolean;
-    changes: FilePatch[];
-}
-```
-
----
-
-# 6️⃣ 6_relevance.ts
-
-```ts
-export {};
-```
-
----
-
-# 7️⃣ 7_summary.ts
-
-```ts
-import * as vscode from 'vscode';
-
-export async function ensureProjectSummary() {
-
-    const files = await vscode.workspace.findFiles(
-        '**/*.{ts,tsx,js,jsx}',
-        '**/{node_modules,dist,.git}/**'
-    );
-
-    return `Project contains ${files.length} source files.`;
-}
-```
-
----
-
-# 8️⃣ 8_embeddings.ts
-
-```ts
-import * as vscode from 'vscode';
-import * as path from 'path';
-import { getEmbedding } from './9_vectorStore';
-
-export async function semanticSearch(query: string) {
-
-    const root = vscode.workspace.workspaceFolders?.[0].uri.fsPath;
-    if (!root) return [];
-
-    const files = await vscode.workspace.findFiles(
-        '**/*.{ts,tsx,js,jsx}',
-        '**/{node_modules,dist,.git}/**'
-    );
-
-    const queryEmbedding = await getEmbedding(query);
-    const scored = [];
+    let output = "";
 
     for (const file of files) {
+        const relative = path.relative(ROOT_DIR, file);
+        const content = fs.readFileSync(file, "utf8");
 
+        output += `\n\n===== FILE: ${relative} =====\n\n`;
+        output += content;
+    }
+
+    fs.writeFileSync(OUTPUT_FILE, output);
+    console.log(`Indexed ${files.length} files into index.txt`);
+}
+
+buildIndex();
+
+===== FILE: media\icon.svg =====
+
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Uploaded to: SVG Repo, www.svgrepo.com, Generator: SVG Repo Mixer Tools -->
+<svg width="800px" height="800px" viewBox="0 0 1024 1024" class="icon"  version="1.1" xmlns="http://www.w3.org/2000/svg"><path d="M512 960c-92.8 0-160-200-160-448S419.2 64 512 64s160 200 160 448-67.2 448-160 448z m0-32c65.6 0 128-185.6 128-416S577.6 96 512 96s-128 185.6-128 416 62.4 416 128 416z" fill="#050D42" /><path d="M124.8 736c-48-80 92.8-238.4 307.2-363.2S852.8 208 899.2 288 806.4 526.4 592 651.2 171.2 816 124.8 736z m27.2-16c33.6 57.6 225.6 17.6 424-97.6S905.6 361.6 872 304 646.4 286.4 448 401.6 118.4 662.4 152 720z" fill="#050D42" /><path d="M899.2 736c-46.4 80-254.4 38.4-467.2-84.8S76.8 368 124.8 288s254.4-38.4 467.2 84.8S947.2 656 899.2 736z m-27.2-16c33.6-57.6-97.6-203.2-296-318.4S184 246.4 152 304 249.6 507.2 448 622.4s392 155.2 424 97.6z" fill="#050D42" /><path d="M512 592c-44.8 0-80-35.2-80-80s35.2-80 80-80 80 35.2 80 80-35.2 80-80 80zM272 312c-27.2 0-48-20.8-48-48s20.8-48 48-48 48 20.8 48 48-20.8 48-48 48zM416 880c-27.2 0-48-20.8-48-48s20.8-48 48-48 48 20.8 48 48-20.8 48-48 48z m448-432c-27.2 0-48-20.8-48-48s20.8-48 48-48 48 20.8 48 48-20.8 48-48 48z" fill="#2F4BFF" /></svg>
+
+===== FILE: out\10_retryLoop.js =====
+
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.runWithRetry = runWithRetry;
+const _3_client_1 = require("./3_client");
+async function runWithRetry(payload) {
+    for (let i = 0; i < 3; i++) {
+        const res = await (0, _3_client_1.callBrain)(payload);
+        console.log("RAW AI RESPONSE:");
+        console.log(res);
+        if (res.success && Array.isArray(res.changes) && res.changes.length) {
+            return res;
+        }
+        payload.instruction += "\nReturn valid JSON with changes array.";
+    }
+    return { success: false, changes: [] };
+}
+//# sourceMappingURL=10_retryLoop.js.map
+
+===== FILE: out\10_retryLoop.js.map =====
+
+{"version":3,"file":"10_retryLoop.js","sourceRoot":"","sources":["../src/10_retryLoop.ts"],"names":[],"mappings":";;AASA,oCAgBC;AAzBD,0CAAuC;AAShC,KAAK,UAAU,YAAY,CAAC,OAAgB;IAE/C,KAAK,IAAI,CAAC,GAAG,CAAC,EAAE,CAAC,GAAG,CAAC,EAAE,CAAC,EAAE,EAAE,CAAC;QAEzB,MAAM,GAAG,GAAG,MAAM,IAAA,qBAAS,EAAC,OAAO,CAAC,CAAC;QAC7C,OAAO,CAAC,GAAG,CAAC,kBAAkB,CAAC,CAAC;QAChC,OAAO,CAAC,GAAG,CAAC,GAAG,CAAC,CAAC;QACT,IAAI,GAAG,CAAC,OAAO,IAAI,KAAK,CAAC,OAAO,CAAC,GAAG,CAAC,OAAO,CAAC,IAAI,GAAG,CAAC,OAAO,CAAC,MAAM,EAAE,CAAC;YAElE,OAAO,GAAG,CAAC;QACf,CAAC;QAED,OAAO,CAAC,WAAW,IAAI,yCAAyC,CAAC;IACrE,CAAC;IAED,OAAO,EAAE,OAAO,EAAE,KAAK,EAAE,OAAO,EAAE,EAAE,EAAE,CAAC;AAC3C,CAAC"}
+
+===== FILE: out\11_astPatcher.js =====
+
+"use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.applyAstSafePatches = applyAstSafePatches;
+const ts = __importStar(require("typescript"));
+const fs = __importStar(require("fs"));
+const path = __importStar(require("path"));
+async function applyAstSafePatches(patches, root) {
+    for (const patch of patches) {
+        const fullPath = path.join(root, patch.path);
+        if (!fs.existsSync(fullPath))
+            continue;
+        const original = fs.readFileSync(fullPath, 'utf-8');
+        let updated = original;
+        for (const edit of patch.edits) {
+            const lines = updated.split('\n');
+            lines.splice(edit.startLine, edit.endLine - edit.startLine, edit.newText);
+            updated = lines.join('\n');
+        }
+        const check = ts.createSourceFile(patch.path, updated, ts.ScriptTarget.Latest, true);
+        const diagnostics = ts.getPreEmitDiagnostics(ts.createProgram({
+            rootNames: [patch.path],
+            options: {}
+        }));
+        if (diagnostics.length === 0) {
+            fs.writeFileSync(fullPath, updated);
+        }
+    }
+}
+//# sourceMappingURL=11_astPatcher.js.map
+
+===== FILE: out\11_astPatcher.js.map =====
+
+{"version":3,"file":"11_astPatcher.js","sourceRoot":"","sources":["../src/11_astPatcher.ts"],"names":[],"mappings":";;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;AAKA,kDAqCC;AA1CD,+CAAiC;AACjC,uCAAyB;AACzB,2CAA6B;AAGtB,KAAK,UAAU,mBAAmB,CACrC,OAAoB,EACpB,IAAY;IAGZ,KAAK,MAAM,KAAK,IAAI,OAAO,EAAE,CAAC;QAE1B,MAAM,QAAQ,GAAG,IAAI,CAAC,IAAI,CAAC,IAAI,EAAE,KAAK,CAAC,IAAI,CAAC,CAAC;QAC7C,IAAI,CAAC,EAAE,CAAC,UAAU,CAAC,QAAQ,CAAC;YAAE,SAAS;QAEvC,MAAM,QAAQ,GAAG,EAAE,CAAC,YAAY,CAAC,QAAQ,EAAE,OAAO,CAAC,CAAC;QACpD,IAAI,OAAO,GAAG,QAAQ,CAAC;QAEvB,KAAK,MAAM,IAAI,IAAI,KAAK,CAAC,KAAK,EAAE,CAAC;YAC7B,MAAM,KAAK,GAAG,OAAO,CAAC,KAAK,CAAC,IAAI,CAAC,CAAC;YAClC,KAAK,CAAC,MAAM,CAAC,IAAI,CAAC,SAAS,EAAE,IAAI,CAAC,OAAO,GAAG,IAAI,CAAC,SAAS,EAAE,IAAI,CAAC,OAAO,CAAC,CAAC;YAC1E,OAAO,GAAG,KAAK,CAAC,IAAI,CAAC,IAAI,CAAC,CAAC;QAC/B,CAAC;QAED,MAAM,KAAK,GAAG,EAAE,CAAC,gBAAgB,CAC7B,KAAK,CAAC,IAAI,EACV,OAAO,EACP,EAAE,CAAC,YAAY,CAAC,MAAM,EACtB,IAAI,CACP,CAAC;QAEF,MAAM,WAAW,GAAG,EAAE,CAAC,qBAAqB,CAChD,EAAE,CAAC,aAAa,CAAC;YACb,SAAS,EAAE,CAAC,KAAK,CAAC,IAAI,CAAC;YACvB,OAAO,EAAE,EAAE;SACd,CAAC,CACL,CAAC;QAEF,IAAI,WAAW,CAAC,MAAM,KAAK,CAAC,EAAE,CAAC;YACnB,EAAE,CAAC,aAAa,CAAC,QAAQ,EAAE,OAAO,CAAC,CAAC;QACxC,CAAC;IACL,CAAC;AACL,CAAC"}
+
+===== FILE: out\12_diffPreview.js =====
+
+"use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.showDiffPreview = showDiffPreview;
+const vscode = __importStar(require("vscode"));
+const fs = __importStar(require("fs"));
+const path = __importStar(require("path"));
+async function showDiffPreview(patches, root) {
+    for (const patch of patches) {
+        const full = path.join(root, patch.path);
+        if (!fs.existsSync(full))
+            continue;
+        const original = fs.readFileSync(full, 'utf-8');
+        let updated = original;
+        for (const edit of patch.edits) {
+            const lines = updated.split('\n');
+            lines.splice(edit.startLine, edit.endLine - edit.startLine, edit.newText);
+            updated = lines.join('\n');
+        }
+        const left = vscode.Uri.parse(`untitled:${patch.path}-old`);
+        const right = vscode.Uri.parse(`untitled:${patch.path}-new`);
+        await vscode.workspace.openTextDocument(left).then(d => vscode.window.showTextDocument(d).then(e => e.edit(b => b.insert(new vscode.Position(0, 0), original))));
+        await vscode.workspace.openTextDocument(right).then(d => vscode.window.showTextDocument(d).then(e => e.edit(b => b.insert(new vscode.Position(0, 0), updated))));
+        await vscode.commands.executeCommand('vscode.diff', left, right, `Preview: ${patch.path}`);
+    }
+    const choice = await vscode.window.showQuickPick(['Apply Changes', 'Cancel'], { placeHolder: 'Approve AI changes?' });
+    return choice === 'Apply Changes';
+}
+//# sourceMappingURL=12_diffPreview.js.map
+
+===== FILE: out\12_diffPreview.js.map =====
+
+{"version":3,"file":"12_diffPreview.js","sourceRoot":"","sources":["../src/12_diffPreview.ts"],"names":[],"mappings":";;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;AAKA,0CAuCC;AA5CD,+CAAiC;AACjC,uCAAyB;AACzB,2CAA6B;AAGtB,KAAK,UAAU,eAAe,CACjC,OAAoB,EACpB,IAAY;IAGZ,KAAK,MAAM,KAAK,IAAI,OAAO,EAAE,CAAC;QAE1B,MAAM,IAAI,GAAG,IAAI,CAAC,IAAI,CAAC,IAAI,EAAE,KAAK,CAAC,IAAI,CAAC,CAAC;QACzC,IAAI,CAAC,EAAE,CAAC,UAAU,CAAC,IAAI,CAAC;YAAE,SAAS;QAEnC,MAAM,QAAQ,GAAG,EAAE,CAAC,YAAY,CAAC,IAAI,EAAE,OAAO,CAAC,CAAC;QAChD,IAAI,OAAO,GAAG,QAAQ,CAAC;QAEvB,KAAK,MAAM,IAAI,IAAI,KAAK,CAAC,KAAK,EAAE,CAAC;YAC7B,MAAM,KAAK,GAAG,OAAO,CAAC,KAAK,CAAC,IAAI,CAAC,CAAC;YAClC,KAAK,CAAC,MAAM,CAAC,IAAI,CAAC,SAAS,EAAE,IAAI,CAAC,OAAO,GAAG,IAAI,CAAC,SAAS,EAAE,IAAI,CAAC,OAAO,CAAC,CAAC;YAC1E,OAAO,GAAG,KAAK,CAAC,IAAI,CAAC,IAAI,CAAC,CAAC;QAC/B,CAAC;QAED,MAAM,IAAI,GAAG,MAAM,CAAC,GAAG,CAAC,KAAK,CAAC,YAAY,KAAK,CAAC,IAAI,MAAM,CAAC,CAAC;QAC5D,MAAM,KAAK,GAAG,MAAM,CAAC,GAAG,CAAC,KAAK,CAAC,YAAY,KAAK,CAAC,IAAI,MAAM,CAAC,CAAC;QAE7D,MAAM,MAAM,CAAC,SAAS,CAAC,gBAAgB,CAAC,IAAI,CAAC,CAAC,IAAI,CAAC,CAAC,CAAC,EAAE,CACnD,MAAM,CAAC,MAAM,CAAC,gBAAgB,CAAC,CAAC,CAAC,CAAC,IAAI,CAAC,CAAC,CAAC,EAAE,CAAC,CAAC,CAAC,IAAI,CAAC,CAAC,CAAC,EAAE,CAAC,CAAC,CAAC,MAAM,CAAC,IAAI,MAAM,CAAC,QAAQ,CAAC,CAAC,EAAE,CAAC,CAAC,EAAE,QAAQ,CAAC,CAAC,CAAC,CAC1G,CAAC;QAEF,MAAM,MAAM,CAAC,SAAS,CAAC,gBAAgB,CAAC,KAAK,CAAC,CAAC,IAAI,CAAC,CAAC,CAAC,EAAE,CACpD,MAAM,CAAC,MAAM,CAAC,gBAAgB,CAAC,CAAC,CAAC,CAAC,IAAI,CAAC,CAAC,CAAC,EAAE,CAAC,CAAC,CAAC,IAAI,CAAC,CAAC,CAAC,EAAE,CAAC,CAAC,CAAC,MAAM,CAAC,IAAI,MAAM,CAAC,QAAQ,CAAC,CAAC,EAAE,CAAC,CAAC,EAAE,OAAO,CAAC,CAAC,CAAC,CACzG,CAAC;QAEF,MAAM,MAAM,CAAC,QAAQ,CAAC,cAAc,CAAC,aAAa,EAAE,IAAI,EAAE,KAAK,EAAE,YAAY,KAAK,CAAC,IAAI,EAAE,CAAC,CAAC;IAC/F,CAAC;IAED,MAAM,MAAM,GAAG,MAAM,MAAM,CAAC,MAAM,CAAC,aAAa,CAC5C,CAAC,eAAe,EAAE,QAAQ,CAAC,EAC3B,EAAE,WAAW,EAAE,qBAAqB,EAAE,CACzC,CAAC;IAEF,OAAO,MAAM,KAAK,eAAe,CAAC;AACtC,CAAC"}
+
+===== FILE: out\13_terminalTool.js =====
+
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.runCommand = runCommand;
+const child_process_1 = require("child_process");
+function runCommand(cmd, cwd) {
+    return new Promise(resolve => {
+        (0, child_process_1.exec)(cmd, { cwd }, (err, stdout, stderr) => {
+            resolve({ err, stdout, stderr });
+        });
+    });
+}
+//# sourceMappingURL=13_terminalTool.js.map
+
+===== FILE: out\13_terminalTool.js.map =====
+
+{"version":3,"file":"13_terminalTool.js","sourceRoot":"","sources":["../src/13_terminalTool.ts"],"names":[],"mappings":";;AAEA,gCAOC;AATD,iDAAqC;AAErC,SAAgB,UAAU,CAAC,GAAW,EAAE,GAAW;IAE/C,OAAO,IAAI,OAAO,CAAC,OAAO,CAAC,EAAE;QACzB,IAAA,oBAAI,EAAC,GAAG,EAAE,EAAE,GAAG,EAAE,EAAE,CAAC,GAAG,EAAE,MAAM,EAAE,MAAM,EAAE,EAAE;YACvC,OAAO,CAAC,EAAE,GAAG,EAAE,MAAM,EAAE,MAAM,EAAE,CAAC,CAAC;QACrC,CAAC,CAAC,CAAC;IACP,CAAC,CAAC,CAAC;AACP,CAAC"}
+
+===== FILE: out\14_testRunner.js =====
+
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.runTests = runTests;
+const _13_terminalTool_1 = require("./13_terminalTool");
+async function runTests(root) {
+    await (0, _13_terminalTool_1.runCommand)('npm test --silent', root);
+}
+//# sourceMappingURL=14_testRunner.js.map
+
+===== FILE: out\14_testRunner.js.map =====
+
+{"version":3,"file":"14_testRunner.js","sourceRoot":"","sources":["../src/14_testRunner.ts"],"names":[],"mappings":";;AAEA,4BAEC;AAJD,wDAA+C;AAExC,KAAK,UAAU,QAAQ,CAAC,IAAY;IACvC,MAAM,IAAA,6BAAU,EAAC,mBAAmB,EAAE,IAAI,CAAC,CAAC;AAChD,CAAC"}
+
+===== FILE: out\15_slashCommands.js =====
+
+"use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.handleSlashCommand = handleSlashCommand;
+const vscode = __importStar(require("vscode"));
+const _3_client_1 = require("./3_client");
+const _13_terminalTool_1 = require("./13_terminalTool");
+/**
+ * Parse a user message and dispatch slash commands.
+ * Returns SlashResult so the caller decides how to render it.
+ */
+async function handleSlashCommand(raw) {
+    const trimmed = raw.trim();
+    // ── /explain ──────────────────────────────────────────────
+    if (trimmed.startsWith('/explain')) {
+        const selection = getEditorSelection();
+        if (!selection) {
+            return { kind: 'explain', text: '⚠️ No code selected. Select code in the editor first.' };
+        }
+        const res = await (0, _3_client_1.callBrain)({
+            instruction: `Explain the following code clearly and concisely:\n\n${selection}`,
+            summary: '',
+            semanticContext: []
+        });
+        const text = res.success
+            ? res.explanation ?? JSON.stringify(res)
+            : res.raw ?? 'Could not explain.';
+        return { kind: 'explain', text };
+    }
+    // ── /fix ──────────────────────────────────────────────────
+    if (trimmed.startsWith('/fix')) {
+        const selection = getEditorSelection();
+        const extra = trimmed.replace('/fix', '').trim();
+        const instruction = selection
+            ? `Fix the following code${extra ? ` — ${extra}` : ''}:\n\n${selection}`
+            : `Fix: ${extra}`;
+        return { kind: 'fix', instruction };
+        // Delegate actual patching back to the extension host
+    }
+    // ── /doc ──────────────────────────────────────────────────
+    if (trimmed.startsWith('/doc')) {
+        const selection = getEditorSelection();
+        if (!selection) {
+            return { kind: 'doc', text: '⚠️ No code selected. Select code in the editor first.' };
+        }
+        const res = await (0, _3_client_1.callBrain)({
+            instruction: `Write JSDoc / TSDoc comments for the following code. Return only the commented code, no explanation:\n\n${selection}`,
+            summary: '',
+            semanticContext: []
+        });
+        const text = res.raw ?? JSON.stringify(res);
+        return { kind: 'doc', text };
+    }
+    // ── /test ──────────────────────────────────────────────────
+    if (trimmed.startsWith('/test')) {
+        const selection = getEditorSelection();
+        const extra = trimmed.replace('/test', '').trim();
+        const code = selection ?? extra;
+        const res = await (0, _3_client_1.callBrain)({
+            instruction: `Write Jest unit tests for the following code. Return only the test file content:\n\n${code}`,
+            summary: '',
+            semanticContext: []
+        });
+        const text = res.raw ?? JSON.stringify(res);
+        return { kind: 'test', text };
+    }
+    // ── /commit ────────────────────────────────────────────────
+    if (trimmed.startsWith('/commit')) {
+        const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (!root) {
+            return { kind: 'commit', text: '⚠️ No workspace open.' };
+        }
+        const { stdout } = await (0, _13_terminalTool_1.runCommand)('git diff --cached --stat', root);
+        const diff = stdout?.slice(0, 3000) ?? '';
+        if (!diff.trim()) {
+            return { kind: 'commit', text: '⚠️ No staged changes found. Run `git add` first.' };
+        }
+        const res = await (0, _3_client_1.callBrain)({
+            instruction: `Generate a concise conventional commit message (type(scope): description) for this git diff:\n\n${diff}`,
+            summary: '',
+            semanticContext: []
+        });
+        const text = res.raw ?? JSON.stringify(res);
+        return { kind: 'commit', text: `Suggested commit message:\n\n${text.trim()}` };
+    }
+    // ── not a slash command ─────────────────────────────────────
+    return { kind: 'passthrough', instruction: raw };
+}
+/**
+ * Return the currently selected text in the active editor, or null.
+ */
+function getEditorSelection() {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor)
+        return null;
+    const sel = editor.selection;
+    if (sel.isEmpty)
+        return null;
+    return editor.document.getText(sel);
+}
+//# sourceMappingURL=15_slashCommands.js.map
+
+===== FILE: out\15_slashCommands.js.map =====
+
+{"version":3,"file":"15_slashCommands.js","sourceRoot":"","sources":["../src/15_slashCommands.ts"],"names":[],"mappings":"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"}
+
+===== FILE: out\16_rulesLoader.js =====
+
+"use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.loadProjectRules = loadProjectRules;
+exports.initRulesFile = initRulesFile;
+const vscode = __importStar(require("vscode"));
+const fs = __importStar(require("fs"));
+const path = __importStar(require("path"));
+const RULES_FILE = '.om-ai-rules.md';
+/**
+ * Load project-level AI rules from `.om-ai-rules.md` in the workspace root.
+ * Similar to Cursor's `.cursorrules` — injected into every prompt.
+ */
+function loadProjectRules() {
+    const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (!root)
+        return '';
+    const rulesPath = path.join(root, RULES_FILE);
+    if (!fs.existsSync(rulesPath))
+        return '';
+    try {
+        const content = fs.readFileSync(rulesPath, 'utf-8').trim();
+        return content ? `\n\n## Project Rules (from ${RULES_FILE})\n${content}` : '';
+    }
+    catch {
+        return '';
+    }
+}
+/**
+ * Create a default .om-ai-rules.md if one doesn't exist.
+ */
+async function initRulesFile() {
+    const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (!root)
+        return;
+    const rulesPath = path.join(root, RULES_FILE);
+    if (fs.existsSync(rulesPath)) {
+        // Open it so the user can see it
+        const doc = await vscode.workspace.openTextDocument(rulesPath);
+        await vscode.window.showTextDocument(doc);
+        return;
+    }
+    const defaultRules = `# Om AI Rules
+
+## Code Style
+- Use TypeScript strict mode
+- Prefer async/await over callbacks
+- Use descriptive variable names
+
+## Architecture
+- Keep functions under 40 lines
+- Separate concerns: one file per responsibility
+
+## Testing
+- Every exported function should have a unit test
+- Use Jest for testing
+
+## Commit Messages
+- Follow conventional commits: type(scope): description
+`;
+    fs.writeFileSync(rulesPath, defaultRules, 'utf-8');
+    const doc = await vscode.workspace.openTextDocument(rulesPath);
+    await vscode.window.showTextDocument(doc);
+    vscode.window.showInformationMessage(`Created ${RULES_FILE} — edit it to guide AI behaviour across all prompts.`);
+}
+//# sourceMappingURL=16_rulesLoader.js.map
+
+===== FILE: out\16_rulesLoader.js.map =====
+
+{"version":3,"file":"16_rulesLoader.js","sourceRoot":"","sources":["../src/16_rulesLoader.ts"],"names":[],"mappings":";;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;AAUA,4CAaC;AAKD,sCAmCC;AA/DD,+CAAiC;AACjC,uCAAyB;AACzB,2CAA6B;AAE7B,MAAM,UAAU,GAAG,iBAAiB,CAAC;AAErC;;;GAGG;AACH,SAAgB,gBAAgB;IAC5B,MAAM,IAAI,GAAG,MAAM,CAAC,SAAS,CAAC,gBAAgB,EAAE,CAAC,CAAC,CAAC,EAAE,GAAG,CAAC,MAAM,CAAC;IAChE,IAAI,CAAC,IAAI;QAAE,OAAO,EAAE,CAAC;IAErB,MAAM,SAAS,GAAG,IAAI,CAAC,IAAI,CAAC,IAAI,EAAE,UAAU,CAAC,CAAC;IAC9C,IAAI,CAAC,EAAE,CAAC,UAAU,CAAC,SAAS,CAAC;QAAE,OAAO,EAAE,CAAC;IAEzC,IAAI,CAAC;QACD,MAAM,OAAO,GAAG,EAAE,CAAC,YAAY,CAAC,SAAS,EAAE,OAAO,CAAC,CAAC,IAAI,EAAE,CAAC;QAC3D,OAAO,OAAO,CAAC,CAAC,CAAC,8BAA8B,UAAU,MAAM,OAAO,EAAE,CAAC,CAAC,CAAC,EAAE,CAAC;IAClF,CAAC;IAAC,MAAM,CAAC;QACL,OAAO,EAAE,CAAC;IACd,CAAC;AACL,CAAC;AAED;;GAEG;AACI,KAAK,UAAU,aAAa;IAC/B,MAAM,IAAI,GAAG,MAAM,CAAC,SAAS,CAAC,gBAAgB,EAAE,CAAC,CAAC,CAAC,EAAE,GAAG,CAAC,MAAM,CAAC;IAChE,IAAI,CAAC,IAAI;QAAE,OAAO;IAElB,MAAM,SAAS,GAAG,IAAI,CAAC,IAAI,CAAC,IAAI,EAAE,UAAU,CAAC,CAAC;IAC9C,IAAI,EAAE,CAAC,UAAU,CAAC,SAAS,CAAC,EAAE,CAAC;QAC3B,iCAAiC;QACjC,MAAM,GAAG,GAAG,MAAM,MAAM,CAAC,SAAS,CAAC,gBAAgB,CAAC,SAAS,CAAC,CAAC;QAC/D,MAAM,MAAM,CAAC,MAAM,CAAC,gBAAgB,CAAC,GAAG,CAAC,CAAC;QAC1C,OAAO;IACX,CAAC;IAED,MAAM,YAAY,GAAG;;;;;;;;;;;;;;;;;CAiBxB,CAAC;IAEE,EAAE,CAAC,aAAa,CAAC,SAAS,EAAE,YAAY,EAAE,OAAO,CAAC,CAAC;IACnD,MAAM,GAAG,GAAG,MAAM,MAAM,CAAC,SAAS,CAAC,gBAAgB,CAAC,SAAS,CAAC,CAAC;IAC/D,MAAM,MAAM,CAAC,MAAM,CAAC,gBAAgB,CAAC,GAAG,CAAC,CAAC;IAC1C,MAAM,CAAC,MAAM,CAAC,sBAAsB,CAAC,WAAW,UAAU,sDAAsD,CAAC,CAAC;AACtH,CAAC"}
+
+===== FILE: out\17_statusBar.js =====
+
+"use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.createStatusBar = createStatusBar;
+exports.setState = setState;
+const vscode = __importStar(require("vscode"));
+let _bar;
+function createStatusBar(context) {
+    _bar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
+    _bar.command = 'om-ai.openChat';
+    context.subscriptions.push(_bar);
+    setState('idle');
+    _bar.show();
+}
+function setState(state, detail) {
+    if (!_bar)
+        return;
+    const labels = {
+        idle: '$(sparkle) Om AI',
+        thinking: '$(loading~spin) Om AI: Thinking…',
+        patching: '$(edit) Om AI: Patching…',
+        done: '$(check) Om AI: Done',
+        error: '$(error) Om AI: Error',
+    };
+    _bar.text = labels[state];
+    _bar.tooltip = detail ?? 'Om AI Pro';
+    // Auto-reset non-idle states after 4 s
+    if (state === 'done' || state === 'error') {
+        setTimeout(() => setState('idle'), 4000);
+    }
+}
+//# sourceMappingURL=17_statusBar.js.map
+
+===== FILE: out\17_statusBar.js.map =====
+
+{"version":3,"file":"17_statusBar.js","sourceRoot":"","sources":["../src/17_statusBar.ts"],"names":[],"mappings":";;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;AAMA,0CAMC;AAED,4BAkBC;AAhCD,+CAAiC;AAIjC,IAAI,IAAsC,CAAC;AAE3C,SAAgB,eAAe,CAAC,OAAgC;IAC5D,IAAI,GAAG,MAAM,CAAC,MAAM,CAAC,mBAAmB,CAAC,MAAM,CAAC,kBAAkB,CAAC,KAAK,EAAE,GAAG,CAAC,CAAC;IAC/E,IAAI,CAAC,OAAO,GAAG,gBAAgB,CAAC;IAChC,OAAO,CAAC,aAAa,CAAC,IAAI,CAAC,IAAI,CAAC,CAAC;IACjC,QAAQ,CAAC,MAAM,CAAC,CAAC;IACjB,IAAI,CAAC,IAAI,EAAE,CAAC;AAChB,CAAC;AAED,SAAgB,QAAQ,CAAC,KAAc,EAAE,MAAe;IACpD,IAAI,CAAC,IAAI;QAAE,OAAO;IAElB,MAAM,MAAM,GAA4B;QACpC,IAAI,EAAM,kBAAkB;QAC5B,QAAQ,EAAE,kCAAkC;QAC5C,QAAQ,EAAE,0BAA0B;QACpC,IAAI,EAAM,sBAAsB;QAChC,KAAK,EAAK,uBAAuB;KACpC,CAAC;IAEF,IAAI,CAAC,IAAI,GAAG,MAAM,CAAC,KAAK,CAAC,CAAC;IAC1B,IAAI,CAAC,OAAO,GAAG,MAAM,IAAI,WAAW,CAAC;IAErC,uCAAuC;IACvC,IAAI,KAAK,KAAK,MAAM,IAAI,KAAK,KAAK,OAAO,EAAE,CAAC;QACxC,UAAU,CAAC,GAAG,EAAE,CAAC,QAAQ,CAAC,MAAM,CAAC,EAAE,IAAI,CAAC,CAAC;IAC7C,CAAC;AACL,CAAC"}
+
+===== FILE: out\1_extension.js =====
+
+"use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.activate = activate;
+exports.deactivate = deactivate;
+const vscode = __importStar(require("vscode"));
+const _7_summary_1 = require("./7_summary");
+const _8_embeddings_1 = require("./8_embeddings");
+const _10_retryLoop_1 = require("./10_retryLoop");
+const _12_diffPreview_1 = require("./12_diffPreview");
+const _11_astPatcher_1 = require("./11_astPatcher");
+const _14_testRunner_1 = require("./14_testRunner");
+const panel_1 = require("./chat/panel");
+const _15_slashCommands_1 = require("./15_slashCommands");
+const _16_rulesLoader_1 = require("./16_rulesLoader");
+const _17_statusBar_1 = require("./17_statusBar");
+const INPUT_COST_PER_MILLION = 0.05;
+const OUTPUT_COST_PER_MILLION = 0.4;
+function activate(context) {
+    // ── Status bar ───────────────────────────────────────────────
+    (0, _17_statusBar_1.createStatusBar)(context);
+    // ── Chat panel ───────────────────────────────────────────────
+    const provider = new panel_1.ChatViewProvider(context.extensionUri);
+    context.subscriptions.push(vscode.window.registerWebviewViewProvider(panel_1.ChatViewProvider.viewType, provider));
+    // ── Command: open rules file ─────────────────────────────────
+    context.subscriptions.push(vscode.commands.registerCommand('om-ai.openRules', () => (0, _16_rulesLoader_1.initRulesFile)()));
+    // ── Command: focus chat (used by status bar) ─────────────────
+    context.subscriptions.push(vscode.commands.registerCommand('om-ai.openChat', () => vscode.commands.executeCommand('workbench.view.extension.om-ai-sidebar')));
+    // ── Message handler ──────────────────────────────────────────
+    provider.onMessage(async (raw) => {
+        try {
+            (0, _17_statusBar_1.setState)('thinking');
+            provider.postLog('Prompt received');
+            if (!raw || raw.trim().length === 0) {
+                provider.postLog('⚠️ Empty prompt.');
+                (0, _17_statusBar_1.setState)('idle');
+                return;
+            }
+            // ── Slash command dispatch ───────────────────────────
+            const slashResult = await (0, _15_slashCommands_1.handleSlashCommand)(raw);
+            if (slashResult.kind !== 'passthrough') {
+                // Slash commands that only need a text reply
+                const simpleKinds = ['explain', 'doc', 'test', 'commit'];
+                if (simpleKinds.includes(slashResult.kind)) {
+                    provider.postMessage(slashResult.text);
+                    (0, _17_statusBar_1.setState)('done');
+                    return;
+                }
+                // /fix — rewrite instruction and fall through to patcher
+                if (slashResult.kind === 'fix') {
+                    const fixResult = slashResult;
+                    provider.postLog('/fix — delegating to patcher…');
+                    // replace raw with the synthesised instruction
+                    return await runPatchFlow(fixResult.instruction, provider);
+                }
+            }
+            // ── Normal (non-slash) prompt ────────────────────────
+            await runPatchFlow(raw, provider);
+        }
+        catch (err) {
+            console.error('Extension runtime error:', err);
+            provider.postLog(`❌ Runtime error: ${err?.message ?? JSON.stringify(err)}`);
+            (0, _17_statusBar_1.setState)('error', err?.message);
+        }
+    });
+}
+// ── Core patch pipeline ──────────────────────────────────────────
+async function runPatchFlow(instruction, provider) {
+    const workspace = vscode.workspace.workspaceFolders?.[0];
+    if (!workspace) {
+        provider.postLog('❌ No workspace folder open.');
+        (0, _17_statusBar_1.setState)('idle');
+        return;
+    }
+    const root = workspace.uri.fsPath;
+    // Load project rules (like .cursorrules)
+    const projectRules = (0, _16_rulesLoader_1.loadProjectRules)();
+    if (projectRules) {
+        provider.postLog('📋 Project rules loaded.');
+    }
+    provider.postLog('Building project summary…');
+    const summary = await (0, _7_summary_1.ensureProjectSummary)();
+    provider.postLog('Running semantic search…');
+    const semanticContext = await (0, _8_embeddings_1.semanticSearch)(instruction);
+    provider.postLog(`Relevant files: ${semanticContext.length}`);
+    // Token estimation
+    const contextChars = semanticContext.reduce((s, f) => s + (f.content?.length ?? 0), 0);
+    const estimatedTokens = Math.round(contextChars / 4);
+    provider.postLog(`Estimated prompt tokens: ~${estimatedTokens}`);
+    provider.postLog(`Estimated input cost: $${((estimatedTokens / 1000000) * INPUT_COST_PER_MILLION).toFixed(6)}`);
+    provider.postLog('Calling AI model…');
+    (0, _17_statusBar_1.setState)('thinking');
+    const result = await (0, _10_retryLoop_1.runWithRetry)({
+        instruction: instruction + projectRules, // ← rules injected here
+        summary,
+        semanticContext
+    });
+    if (!result) {
+        provider.postLog('❌ AI returned empty response.');
+        (0, _17_statusBar_1.setState)('error');
+        return;
+    }
+    // Actual token cost from response
+    if (result.usage) {
+        const u = result.usage;
+        const pt = u.promptTokenCount ?? 0;
+        const ct = u.candidatesTokenCount ?? 0;
+        const ic = (pt / 1000000) * INPUT_COST_PER_MILLION;
+        const oc = (ct / 1000000) * OUTPUT_COST_PER_MILLION;
+        provider.postLog(`Tokens — prompt: ${pt}, completion: ${ct} | Cost: $${(ic + oc).toFixed(6)}`);
+    }
+    if (!result.success) {
+        provider.postLog('❌ AI failed to generate valid patches.');
+        if (result.raw) {
+            provider.postLog('Model said: ' + result.raw.slice(0, 800));
+        }
+        (0, _17_statusBar_1.setState)('error');
+        return;
+    }
+    if (!Array.isArray(result.changes) || result.changes.length === 0) {
+        provider.postLog('⚠️ AI returned no code changes.');
+        (0, _17_statusBar_1.setState)('idle');
+        return;
+    }
+    provider.postLog(`Generated ${result.changes.length} patch(es). Opening diff preview…`);
+    const approved = await (0, _12_diffPreview_1.showDiffPreview)(result.changes, root);
+    if (!approved) {
+        provider.postLog('⚠️ User cancelled patch.');
+        (0, _17_statusBar_1.setState)('idle');
+        return;
+    }
+    (0, _17_statusBar_1.setState)('patching');
+    provider.postLog('Applying patches…');
+    await (0, _11_astPatcher_1.applyAstSafePatches)(result.changes, root);
+    provider.postLog('Running tests…');
+    await (0, _14_testRunner_1.runTests)(root);
+    provider.postLog('✅ Completed successfully.');
+    (0, _17_statusBar_1.setState)('done');
+}
+function deactivate() { }
+//# sourceMappingURL=1_extension.js.map
+
+===== FILE: out\1_extension.js.map =====
+
+{"version":3,"file":"1_extension.js","sourceRoot":"","sources":["../src/1_extension.ts"],"names":[],"mappings":"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"}
+
+===== FILE: out\2_indexer.js =====
+
+"use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.indexProject = indexProject;
+const vscode = __importStar(require("vscode"));
+async function indexProject() {
+    return vscode.workspace.findFiles('**/*.{ts,tsx,js,jsx}', '**/{node_modules,dist,.git}/**');
+}
+//# sourceMappingURL=2_indexer.js.map
+
+===== FILE: out\2_indexer.js.map =====
+
+{"version":3,"file":"2_indexer.js","sourceRoot":"","sources":["../src/2_indexer.ts"],"names":[],"mappings":";;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;AAEA,oCAKC;AAPD,+CAAiC;AAE1B,KAAK,UAAU,YAAY;IAC9B,OAAO,MAAM,CAAC,SAAS,CAAC,SAAS,CAC7B,sBAAsB,EACtB,gCAAgC,CACnC,CAAC;AACN,CAAC"}
+
+===== FILE: out\3_client.js =====
+
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.callBrain = callBrain;
+exports.callEmbeddingAPI = callEmbeddingAPI;
+const generative_ai_1 = require("@google/generative-ai");
+const genAI = new generative_ai_1.GoogleGenerativeAI(process.env.GEMINI_API_KEY || "AIzaSyCsUW2S4cUL7I9NFDfKS-qPjWOTdGgQiWU");
+async function callBrain(payload) {
+    const model = genAI.getGenerativeModel({
+        model: "gemini-2.5-flash"
+    });
+    const prompt = `
+You are an AI coding agent.
+
+Return ONLY valid JSON in this format:
+
+{
+ "success": true,
+ "changes": [
+  {
+   "path": "relative/file/path.js",
+   "edits": [
+    {
+     "startLine": number,
+     "endLine": number,
+     "newText": "replacement code"
+    }
+   ]
+  }
+ ]
+}
+
+Rules:
+- Return JSON only
+- No explanation
+- No markdown
+- Only modify existing files
+
+Instruction:
+${JSON.stringify(payload)}
+`;
+    const result = await model.generateContent(prompt);
+    const text = result.response.text();
+    console.log("========== RAW MODEL RESPONSE ==========");
+    console.log(text);
+    console.log("========================================");
+    try {
+        return JSON.parse(text);
+    }
+    catch (err) {
+        console.log("JSON PARSE FAILED");
+        console.log(err);
+        return {
+            success: false,
+            changes: [],
+            raw: text
+        };
+    }
+}
+async function callEmbeddingAPI(text) {
+    return [];
+}
+//# sourceMappingURL=3_client.js.map
+
+===== FILE: out\3_client.js.map =====
+
+{"version":3,"file":"3_client.js","sourceRoot":"","sources":["../src/3_client.ts"],"names":[],"mappings":";;AAIA,8BA0DC;AAED,4CAEC;AAlED,yDAA2D;AAE3D,MAAM,KAAK,GAAG,IAAI,kCAAkB,CAAC,OAAO,CAAC,GAAG,CAAC,cAAc,IAAI,yCAAyC,CAAC,CAAC;AAEvG,KAAK,UAAU,SAAS,CAAC,OAAY;IAExC,MAAM,KAAK,GAAG,KAAK,CAAC,kBAAkB,CAAC;QACnC,KAAK,EAAE,kBAAkB;KAC5B,CAAC,CAAC;IAEH,MAAM,MAAM,GAAG;;;;;;;;;;;;;;;;;;;;;;;;;;;;EA4BjB,IAAI,CAAC,SAAS,CAAC,OAAO,CAAC;CACxB,CAAC;IAEE,MAAM,MAAM,GAAG,MAAM,KAAK,CAAC,eAAe,CAAC,MAAM,CAAC,CAAC;IAEnD,MAAM,IAAI,GAAG,MAAM,CAAC,QAAQ,CAAC,IAAI,EAAE,CAAC;IAEpC,OAAO,CAAC,GAAG,CAAC,0CAA0C,CAAC,CAAC;IACxD,OAAO,CAAC,GAAG,CAAC,IAAI,CAAC,CAAC;IAClB,OAAO,CAAC,GAAG,CAAC,0CAA0C,CAAC,CAAC;IAExD,IAAI,CAAC;QACD,OAAO,IAAI,CAAC,KAAK,CAAC,IAAI,CAAC,CAAC;IAC5B,CAAC;IAAC,OAAO,GAAG,EAAE,CAAC;QAEX,OAAO,CAAC,GAAG,CAAC,mBAAmB,CAAC,CAAC;QACjC,OAAO,CAAC,GAAG,CAAC,GAAG,CAAC,CAAC;QAEjB,OAAO;YACH,OAAO,EAAE,KAAK;YACd,OAAO,EAAE,EAAE;YACX,GAAG,EAAE,IAAI;SACZ,CAAC;IACN,CAAC;AACL,CAAC;AAEM,KAAK,UAAU,gBAAgB,CAAC,IAAY;IAC/C,OAAO,EAAE,CAAC;AACd,CAAC"}
+
+===== FILE: out\4_patcher.js =====
+
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+//# sourceMappingURL=4_patcher.js.map
+
+===== FILE: out\4_patcher.js.map =====
+
+{"version":3,"file":"4_patcher.js","sourceRoot":"","sources":["../src/4_patcher.ts"],"names":[],"mappings":""}
+
+===== FILE: out\5_types.js =====
+
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+//# sourceMappingURL=5_types.js.map
+
+===== FILE: out\5_types.js.map =====
+
+{"version":3,"file":"5_types.js","sourceRoot":"","sources":["../src/5_types.ts"],"names":[],"mappings":""}
+
+===== FILE: out\6_relevance.js =====
+
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+//# sourceMappingURL=6_relevance.js.map
+
+===== FILE: out\6_relevance.js.map =====
+
+{"version":3,"file":"6_relevance.js","sourceRoot":"","sources":["../src/6_relevance.ts"],"names":[],"mappings":""}
+
+===== FILE: out\7_summary.js =====
+
+"use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.ensureProjectSummary = ensureProjectSummary;
+const vscode = __importStar(require("vscode"));
+async function ensureProjectSummary() {
+    const files = await vscode.workspace.findFiles('**/*.{ts,tsx,js,jsx}', '**/{node_modules,dist,.git}/**');
+    return `Project contains ${files.length} source files.`;
+}
+//# sourceMappingURL=7_summary.js.map
+
+===== FILE: out\7_summary.js.map =====
+
+{"version":3,"file":"7_summary.js","sourceRoot":"","sources":["../src/7_summary.ts"],"names":[],"mappings":";;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;AAEA,oDAQC;AAVD,+CAAiC;AAE1B,KAAK,UAAU,oBAAoB;IAEtC,MAAM,KAAK,GAAG,MAAM,MAAM,CAAC,SAAS,CAAC,SAAS,CAC1C,sBAAsB,EACtB,gCAAgC,CACnC,CAAC;IAEF,OAAO,oBAAoB,KAAK,CAAC,MAAM,gBAAgB,CAAC;AAC5D,CAAC"}
+
+===== FILE: out\8_embeddings.js =====
+
+"use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.semanticSearch = semanticSearch;
+const vscode = __importStar(require("vscode"));
+const path = __importStar(require("path"));
+const _9_vectorStore_1 = require("./9_vectorStore");
+async function semanticSearch(query) {
+    const root = vscode.workspace.workspaceFolders?.[0].uri.fsPath;
+    if (!root)
+        return [];
+    const files = await vscode.workspace.findFiles('**/*.{ts,tsx,js,jsx}', '**/{node_modules,dist,.git}/**');
+    const queryEmbedding = await (0, _9_vectorStore_1.getEmbedding)(query);
+    const scored = [];
+    for (const file of files) {
         const doc = await vscode.workspace.openTextDocument(file);
         const content = doc.getText().slice(0, 8000);
-
-        const emb = await getEmbedding(content);
+        const emb = await (0, _9_vectorStore_1.getEmbedding)(content);
         const score = cosineSimilarity(queryEmbedding, emb);
-
         scored.push({
             path: path.relative(root, file.fsPath),
             content,
             score
         });
     }
-
     scored.sort((a, b) => b.score - a.score);
-
-    return scored.slice(0, 10);
+    return scored.slice(0, 3);
 }
-
-function cosineSimilarity(a: number[], b: number[]) {
+function cosineSimilarity(a, b) {
     const dot = a.reduce((s, v, i) => s + v * b[i], 0);
     const magA = Math.sqrt(a.reduce((s, v) => s + v * v, 0));
     const magB = Math.sqrt(b.reduce((s, v) => s + v * v, 0));
     return dot / (magA * magB);
 }
-```
+//# sourceMappingURL=8_embeddings.js.map
 
----
+===== FILE: out\8_embeddings.js.map =====
 
-# 9️⃣ 9_vectorStore.ts
+{"version":3,"file":"8_embeddings.js","sourceRoot":"","sources":["../src/8_embeddings.ts"],"names":[],"mappings":";;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;AAIA,wCA+BC;AAnCD,+CAAiC;AACjC,2CAA6B;AAC7B,oDAA+C;AAExC,KAAK,UAAU,cAAc,CAAC,KAAa;IAE9C,MAAM,IAAI,GAAG,MAAM,CAAC,SAAS,CAAC,gBAAgB,EAAE,CAAC,CAAC,CAAC,CAAC,GAAG,CAAC,MAAM,CAAC;IAC/D,IAAI,CAAC,IAAI;QAAE,OAAO,EAAE,CAAC;IAErB,MAAM,KAAK,GAAG,MAAM,MAAM,CAAC,SAAS,CAAC,SAAS,CAC1C,sBAAsB,EACtB,gCAAgC,CACnC,CAAC;IAEF,MAAM,cAAc,GAAG,MAAM,IAAA,6BAAY,EAAC,KAAK,CAAC,CAAC;IACjD,MAAM,MAAM,GAAG,EAAE,CAAC;IAElB,KAAK,MAAM,IAAI,IAAI,KAAK,EAAE,CAAC;QAEvB,MAAM,GAAG,GAAG,MAAM,MAAM,CAAC,SAAS,CAAC,gBAAgB,CAAC,IAAI,CAAC,CAAC;QAC1D,MAAM,OAAO,GAAG,GAAG,CAAC,OAAO,EAAE,CAAC,KAAK,CAAC,CAAC,EAAE,IAAI,CAAC,CAAC;QAE7C,MAAM,GAAG,GAAG,MAAM,IAAA,6BAAY,EAAC,OAAO,CAAC,CAAC;QACxC,MAAM,KAAK,GAAG,gBAAgB,CAAC,cAAc,EAAE,GAAG,CAAC,CAAC;QAEpD,MAAM,CAAC,IAAI,CAAC;YACR,IAAI,EAAE,IAAI,CAAC,QAAQ,CAAC,IAAI,EAAE,IAAI,CAAC,MAAM,CAAC;YACtC,OAAO;YACP,KAAK;SACR,CAAC,CAAC;IACP,CAAC;IAED,MAAM,CAAC,IAAI,CAAC,CAAC,CAAC,EAAE,CAAC,EAAE,EAAE,CAAC,CAAC,CAAC,KAAK,GAAG,CAAC,CAAC,KAAK,CAAC,CAAC;IAEzC,OAAO,MAAM,CAAC,KAAK,CAAC,CAAC,EAAE,CAAC,CAAC,CAAC;AAC9B,CAAC;AAED,SAAS,gBAAgB,CAAC,CAAW,EAAE,CAAW;IAC9C,MAAM,GAAG,GAAG,CAAC,CAAC,MAAM,CAAC,CAAC,CAAC,EAAE,CAAC,EAAE,CAAC,EAAE,EAAE,CAAC,CAAC,GAAG,CAAC,GAAG,CAAC,CAAC,CAAC,CAAC,EAAE,CAAC,CAAC,CAAC;IACnD,MAAM,IAAI,GAAG,IAAI,CAAC,IAAI,CAAC,CAAC,CAAC,MAAM,CAAC,CAAC,CAAC,EAAE,CAAC,EAAE,EAAE,CAAC,CAAC,GAAG,CAAC,GAAG,CAAC,EAAE,CAAC,CAAC,CAAC,CAAC;IACzD,MAAM,IAAI,GAAG,IAAI,CAAC,IAAI,CAAC,CAAC,CAAC,MAAM,CAAC,CAAC,CAAC,EAAE,CAAC,EAAE,EAAE,CAAC,CAAC,GAAG,CAAC,GAAG,CAAC,EAAE,CAAC,CAAC,CAAC,CAAC;IACzD,OAAO,GAAG,GAAG,CAAC,IAAI,GAAG,IAAI,CAAC,CAAC;AAC/B,CAAC"}
 
-```ts
-import * as fs from 'fs';
-import * as path from 'path';
-import { callEmbeddingAPI } from './3_client';
+===== FILE: out\9_vectorStore.js =====
 
+"use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.getEmbedding = getEmbedding;
+const fs = __importStar(require("fs"));
+const path = __importStar(require("path"));
+const _3_client_1 = require("./3_client");
 const DB_PATH = path.join(process.cwd(), '.om-ai-vectors.json');
-
-interface Store {
-    [key: string]: number[];
-}
-
-let cache: Store = {};
-
+let cache = {};
 if (fs.existsSync(DB_PATH)) {
     cache = JSON.parse(fs.readFileSync(DB_PATH, 'utf-8'));
 }
-
-export async function getEmbedding(text: string) {
-
-    if (cache[text]) return cache[text];
-
-    const vector = await callEmbeddingAPI(text);
+async function getEmbedding(text) {
+    if (cache[text])
+        return cache[text];
+    const vector = await (0, _3_client_1.callEmbeddingAPI)(text);
     cache[text] = vector;
-
     fs.writeFileSync(DB_PATH, JSON.stringify(cache));
-
     return vector;
 }
-```
+//# sourceMappingURL=9_vectorStore.js.map
 
----
+===== FILE: out\9_vectorStore.js.map =====
 
-# 🔟 10_retryLoop.ts
+{"version":3,"file":"9_vectorStore.js","sourceRoot":"","sources":["../src/9_vectorStore.ts"],"names":[],"mappings":";;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;AAgBA,oCAUC;AA1BD,uCAAyB;AACzB,2CAA6B;AAC7B,0CAA8C;AAE9C,MAAM,OAAO,GAAG,IAAI,CAAC,IAAI,CAAC,OAAO,CAAC,GAAG,EAAE,EAAE,qBAAqB,CAAC,CAAC;AAMhE,IAAI,KAAK,GAAU,EAAE,CAAC;AAEtB,IAAI,EAAE,CAAC,UAAU,CAAC,OAAO,CAAC,EAAE,CAAC;IACzB,KAAK,GAAG,IAAI,CAAC,KAAK,CAAC,EAAE,CAAC,YAAY,CAAC,OAAO,EAAE,OAAO,CAAC,CAAC,CAAC;AAC1D,CAAC;AAEM,KAAK,UAAU,YAAY,CAAC,IAAY;IAE3C,IAAI,KAAK,CAAC,IAAI,CAAC;QAAE,OAAO,KAAK,CAAC,IAAI,CAAC,CAAC;IAEpC,MAAM,MAAM,GAAG,MAAM,IAAA,4BAAgB,EAAC,IAAI,CAAC,CAAC;IAC5C,KAAK,CAAC,IAAI,CAAC,GAAG,MAAM,CAAC;IAErB,EAAE,CAAC,aAAa,CAAC,OAAO,EAAE,IAAI,CAAC,SAAS,CAAC,KAAK,CAAC,CAAC,CAAC;IAEjD,OAAO,MAAM,CAAC;AAClB,CAAC"}
 
-```ts
+===== FILE: out\chat\panel.js =====
+
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.ChatViewProvider = void 0;
+class ChatViewProvider {
+    constructor(extensionUri) {
+        this.extensionUri = extensionUri;
+    }
+    resolveWebviewView(webviewView, _context, _token) {
+        this._view = webviewView;
+        webviewView.webview.options = { enableScripts: true };
+        webviewView.webview.html = this.getHtml();
+        webviewView.webview.onDidReceiveMessage(msg => {
+            if (msg.type === 'prompt' && this._onMessage) {
+                this._onMessage(msg.text);
+            }
+            if (msg.type === 'clearHistory') {
+                // Just acknowledged — history lives in webview state
+            }
+        });
+    }
+    onMessage(cb) {
+        this._onMessage = cb;
+    }
+    /** Log a status line (assistant bubble, grey style) */
+    postLog(text) {
+        this._post({ type: 'log', text });
+    }
+    /** Post a full AI reply (assistant bubble, normal style) */
+    postMessage(text) {
+        this._post({ type: 'assistant', text });
+    }
+    _post(payload) {
+        if (!this._view)
+            return;
+        this._view.webview.postMessage(payload);
+    }
+    getHtml() {
+        return /* html */ `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<style>
+:root {
+    --bg:           var(--vscode-sideBar-background);
+    --border:       var(--vscode-editorWidget-border);
+    --text:         var(--vscode-editor-foreground);
+    --text-muted:   var(--vscode-descriptionForeground);
+    --input-bg:     var(--vscode-input-background);
+    --input-border: var(--vscode-input-border);
+    --btn-bg:       var(--vscode-button-background);
+    --btn-hover:    var(--vscode-button-hoverBackground);
+    --btn-text:     var(--vscode-button-foreground);
+    --log-bg:       var(--vscode-editor-inactiveSelectionBackground);
+    --user-bg:      var(--vscode-button-background);
+    --radius:       8px;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--vscode-font-family);
+    font-size: 13px;
+    display: flex;
+    flex-direction: column;
+}
+
+/* ── toolbar ── */
+#toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--border);
+    gap: 4px;
+}
+#toolbar span { font-size: 11px; color: var(--text-muted); }
+#clearBtn {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    border-radius: 4px;
+    padding: 2px 8px;
+    cursor: pointer;
+    font-size: 11px;
+}
+#clearBtn:hover { color: var(--text); border-color: var(--text-muted); }
+
+/* ── chat area ── */
+#chat {
+    flex: 1;
+    overflow-y: auto;
+    padding: 10px 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.message {
+    max-width: 92%;
+    padding: 7px 11px;
+    border-radius: var(--radius);
+    line-height: 1.45;
+    word-wrap: break-word;
+    white-space: pre-wrap;
+}
+.user {
+    align-self: flex-end;
+    background: var(--user-bg);
+    color: var(--btn-text);
+    border-bottom-right-radius: 2px;
+}
+.assistant {
+    align-self: flex-start;
+    background: var(--log-bg);
+    border-bottom-left-radius: 2px;
+}
+.log {
+    align-self: flex-start;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 11px;
+    padding: 2px 4px;
+}
+
+/* ── slash hints ── */
+#hints {
+    display: none;
+    flex-direction: column;
+    background: var(--input-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    margin: 0 8px 4px;
+    overflow: hidden;
+}
+.hint-item {
+    padding: 5px 10px;
+    cursor: pointer;
+    font-size: 12px;
+    display: flex;
+    gap: 8px;
+}
+.hint-item:hover { background: var(--log-bg); }
+.hint-cmd  { color: var(--btn-bg); font-weight: 600; min-width: 70px; }
+.hint-desc { color: var(--text-muted); }
+
+/* ── composer ── */
+#composer {
+    border-top: 1px solid var(--border);
+    padding: 8px;
+    display: flex;
+    gap: 6px;
+    align-items: flex-end;
+}
+textarea {
+    flex: 1;
+    resize: none;
+    background: var(--input-bg);
+    color: var(--text);
+    border: 1px solid var(--input-border);
+    border-radius: 6px;
+    padding: 6px 8px;
+    font-family: inherit;
+    font-size: 13px;
+    min-height: 38px;
+    max-height: 120px;
+}
+textarea:focus { outline: none; border-color: var(--vscode-focusBorder); }
+button {
+    background: var(--btn-bg);
+    color: var(--btn-text);
+    border: none;
+    border-radius: 6px;
+    padding: 6px 12px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+button:hover { background: var(--btn-hover); }
+</style>
+</head>
+
+<body>
+
+<div id="toolbar">
+    <span>Om AI Chat</span>
+    <button id="clearBtn" onclick="clearHistory()">Clear</button>
+</div>
+
+<div id="chat"></div>
+
+<div id="hints">
+    <div class="hint-item" onclick="fillSlash('/explain')">
+        <span class="hint-cmd">/explain</span>
+        <span class="hint-desc">Explain selected code</span>
+    </div>
+    <div class="hint-item" onclick="fillSlash('/fix')">
+        <span class="hint-cmd">/fix</span>
+        <span class="hint-desc">Fix selected code or describe the issue</span>
+    </div>
+    <div class="hint-item" onclick="fillSlash('/doc')">
+        <span class="hint-cmd">/doc</span>
+        <span class="hint-desc">Generate JSDoc for selected code</span>
+    </div>
+    <div class="hint-item" onclick="fillSlash('/test')">
+        <span class="hint-cmd">/test</span>
+        <span class="hint-desc">Generate unit tests for selected code</span>
+    </div>
+    <div class="hint-item" onclick="fillSlash('/commit')">
+        <span class="hint-cmd">/commit</span>
+        <span class="hint-desc">Generate commit message for staged changes</span>
+    </div>
+</div>
+
+<div id="composer">
+    <textarea id="input" rows="2" placeholder="Ask anything… or type / for commands"></textarea>
+    <button onclick="send()">Send</button>
+</div>
+
+<script>
+const vscode = acquireVsCodeApi();
+const chat   = document.getElementById('chat');
+const hints  = document.getElementById('hints');
+const input  = document.getElementById('input');
+
+// ── restore persisted history ────────────────────────────────────
+const state = vscode.getState() ?? { messages: [] };
+
+state.messages.forEach(m => renderMessage(m.text, m.role));
+
+// ── slash hints ──────────────────────────────────────────────────
+input.addEventListener('input', () => {
+    const val = input.value;
+    hints.style.display = val === '/' || val.startsWith('/') && !val.includes(' ') ? 'flex' : 'none';
+    // auto-grow
+    input.style.height = 'auto';
+    input.style.height = Math.min(input.scrollHeight, 120) + 'px';
+});
+
+input.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+});
+
+function fillSlash(cmd) {
+    input.value = cmd + ' ';
+    hints.style.display = 'none';
+    input.focus();
+}
+
+// ── send ─────────────────────────────────────────────────────────
+function send() {
+    hints.style.display = 'none';
+    const text = input.value.trim();
+    if (!text) return;
+
+    addMessage(text, 'user');
+    vscode.postMessage({ type: 'prompt', text });
+    input.value = '';
+    input.style.height = 'auto';
+}
+
+// ── clear history ─────────────────────────────────────────────────
+function clearHistory() {
+    chat.innerHTML = '';
+    vscode.setState({ messages: [] });
+}
+
+// ── render ────────────────────────────────────────────────────────
+function addMessage(text, role) {
+    renderMessage(text, role);
+    const s = vscode.getState() ?? { messages: [] };
+    s.messages.push({ text, role });
+    // cap history at 100 messages
+    if (s.messages.length > 100) s.messages.shift();
+    vscode.setState(s);
+}
+
+function renderMessage(text, role) {
+    const div = document.createElement('div');
+    div.className = 'message ' + role;
+    div.textContent = text;
+    chat.appendChild(div);
+    chat.scrollTop = chat.scrollHeight;
+}
+
+// ── receive from extension ────────────────────────────────────────
+window.addEventListener('message', event => {
+    const msg = event.data;
+    if (msg.type === 'assistant') {
+        addMessage(msg.text, 'assistant');
+    } else if (msg.type === 'log') {
+        addMessage(msg.text, 'log');
+    }
+});
+</script>
+
+</body>
+</html>
+`;
+    }
+}
+exports.ChatViewProvider = ChatViewProvider;
+ChatViewProvider.viewType = 'om-ai-chat-view';
+//# sourceMappingURL=panel.js.map
+
+===== FILE: out\chat\panel.js.map =====
+
+{"version":3,"file":"panel.js","sourceRoot":"","sources":["../../src/chat/panel.ts"],"names":[],"mappings":";;;AAEA,MAAa,gBAAgB;IAOzB,YAA6B,YAAwB;QAAxB,iBAAY,GAAZ,YAAY,CAAY;IAAG,CAAC;IAEzD,kBAAkB,CACd,WAA+B,EAC/B,QAA0C,EAC1C,MAAgC;QAEhC,IAAI,CAAC,KAAK,GAAG,WAAW,CAAC;QAEzB,WAAW,CAAC,OAAO,CAAC,OAAO,GAAG,EAAE,aAAa,EAAE,IAAI,EAAE,CAAC;QACtD,WAAW,CAAC,OAAO,CAAC,IAAI,GAAG,IAAI,CAAC,OAAO,EAAE,CAAC;QAE1C,WAAW,CAAC,OAAO,CAAC,mBAAmB,CAAC,GAAG,CAAC,EAAE;YAC1C,IAAI,GAAG,CAAC,IAAI,KAAK,QAAQ,IAAI,IAAI,CAAC,UAAU,EAAE,CAAC;gBAC3C,IAAI,CAAC,UAAU,CAAC,GAAG,CAAC,IAAI,CAAC,CAAC;YAC9B,CAAC;YACD,IAAI,GAAG,CAAC,IAAI,KAAK,cAAc,EAAE,CAAC;gBAC9B,qDAAqD;YACzD,CAAC;QACL,CAAC,CAAC,CAAC;IACP,CAAC;IAEM,SAAS,CAAC,EAAyB;QACtC,IAAI,CAAC,UAAU,GAAG,EAAE,CAAC;IACzB,CAAC;IAED,uDAAuD;IAChD,OAAO,CAAC,IAAY;QACvB,IAAI,CAAC,KAAK,CAAC,EAAE,IAAI,EAAE,KAAK,EAAE,IAAI,EAAE,CAAC,CAAC;IACtC,CAAC;IAED,4DAA4D;IACrD,WAAW,CAAC,IAAY;QAC3B,IAAI,CAAC,KAAK,CAAC,EAAE,IAAI,EAAE,WAAW,EAAE,IAAI,EAAE,CAAC,CAAC;IAC5C,CAAC;IAEO,KAAK,CAAC,OAAe;QACzB,IAAI,CAAC,IAAI,CAAC,KAAK;YAAE,OAAO;QACxB,IAAI,CAAC,KAAK,CAAC,OAAO,CAAC,WAAW,CAAC,OAAO,CAAC,CAAC;IAC5C,CAAC;IAEO,OAAO;QACX,OAAO,UAAU,CAAA;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;CAuQxB,CAAC;IACE,CAAC;;AAzTL,4CA0TC;AAxT0B,yBAAQ,GAAG,iBAAiB,CAAC"}
+
+===== FILE: package-lock.json =====
+
+{
+  "name": "om-ai-pro",
+  "version": "0.0.1",
+  "lockfileVersion": 3,
+  "requires": true,
+  "packages": {
+    "": {
+      "name": "om-ai-pro",
+      "version": "0.0.1",
+      "dependencies": {
+        "@google/generative-ai": "^0.24.1",
+        "axios": "^1.13.6",
+        "path": "^0.12.7"
+      },
+      "devDependencies": {
+        "@types/node": "^20.19.35",
+        "@types/vscode": "^1.109.0",
+        "typescript": "^5.9.3"
+      },
+      "engines": {
+        "vscode": "^1.85.0"
+      }
+    },
+    "node_modules/@google/generative-ai": {
+      "version": "0.24.1",
+      "resolved": "https://registry.npmjs.org/@google/generative-ai/-/generative-ai-0.24.1.tgz",
+      "integrity": "sha512-MqO+MLfM6kjxcKoy0p1wRzG3b4ZZXtPI+z2IE26UogS2Cm/XHO+7gGRBh6gcJsOiIVoH93UwKvW4HdgiOZCy9Q==",
+      "license": "Apache-2.0",
+      "engines": {
+        "node": ">=18.0.0"
+      }
+    },
+    "node_modules/@types/node": {
+      "version": "20.19.35",
+      "resolved": "https://registry.npmjs.org/@types/node/-/node-20.19.35.tgz",
+      "integrity": "sha512-Uarfe6J91b9HAUXxjvSOdiO2UPOKLm07Q1oh0JHxoZ1y8HoqxDAu3gVrsrOHeiio0kSsoVBt4wFrKOm0dKxVPQ==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "undici-types": "~6.21.0"
+      }
+    },
+    "node_modules/@types/vscode": {
+      "version": "1.109.0",
+      "resolved": "https://registry.npmjs.org/@types/vscode/-/vscode-1.109.0.tgz",
+      "integrity": "sha512-0Pf95rnwEIwDbmXGC08r0B4TQhAbsHQ5UyTIgVgoieDe4cOnf92usuR5dEczb6bTKEp7ziZH4TV1TRGPPCExtw==",
+      "dev": true,
+      "license": "MIT"
+    },
+    "node_modules/asynckit": {
+      "version": "0.4.0",
+      "resolved": "https://registry.npmjs.org/asynckit/-/asynckit-0.4.0.tgz",
+      "integrity": "sha512-Oei9OH4tRh0YqU3GxhX79dM/mwVgvbZJaSNaRk+bshkj0S5cfHcgYakreBjrHwatXKbz+IoIdYLxrKim2MjW0Q==",
+      "license": "MIT"
+    },
+    "node_modules/axios": {
+      "version": "1.13.6",
+      "resolved": "https://registry.npmjs.org/axios/-/axios-1.13.6.tgz",
+      "integrity": "sha512-ChTCHMouEe2kn713WHbQGcuYrr6fXTBiu460OTwWrWob16g1bXn4vtz07Ope7ewMozJAnEquLk5lWQWtBig9DQ==",
+      "license": "MIT",
+      "dependencies": {
+        "follow-redirects": "^1.15.11",
+        "form-data": "^4.0.5",
+        "proxy-from-env": "^1.1.0"
+      }
+    },
+    "node_modules/call-bind-apply-helpers": {
+      "version": "1.0.2",
+      "resolved": "https://registry.npmjs.org/call-bind-apply-helpers/-/call-bind-apply-helpers-1.0.2.tgz",
+      "integrity": "sha512-Sp1ablJ0ivDkSzjcaJdxEunN5/XvksFJ2sMBFfq6x0ryhQV/2b/KwFe21cMpmHtPOSij8K99/wSfoEuTObmuMQ==",
+      "license": "MIT",
+      "dependencies": {
+        "es-errors": "^1.3.0",
+        "function-bind": "^1.1.2"
+      },
+      "engines": {
+        "node": ">= 0.4"
+      }
+    },
+    "node_modules/combined-stream": {
+      "version": "1.0.8",
+      "resolved": "https://registry.npmjs.org/combined-stream/-/combined-stream-1.0.8.tgz",
+      "integrity": "sha512-FQN4MRfuJeHf7cBbBMJFXhKSDq+2kAArBlmRBvcvFE5BB1HZKXtSFASDhdlz9zOYwxh8lDdnvmMOe/+5cdoEdg==",
+      "license": "MIT",
+      "dependencies": {
+        "delayed-stream": "~1.0.0"
+      },
+      "engines": {
+        "node": ">= 0.8"
+      }
+    },
+    "node_modules/delayed-stream": {
+      "version": "1.0.0",
+      "resolved": "https://registry.npmjs.org/delayed-stream/-/delayed-stream-1.0.0.tgz",
+      "integrity": "sha512-ZySD7Nf91aLB0RxL4KGrKHBXl7Eds1DAmEdcoVawXnLD7SDhpNgtuII2aAkg7a7QS41jxPSZ17p4VdGnMHk3MQ==",
+      "license": "MIT",
+      "engines": {
+        "node": ">=0.4.0"
+      }
+    },
+    "node_modules/dunder-proto": {
+      "version": "1.0.1",
+      "resolved": "https://registry.npmjs.org/dunder-proto/-/dunder-proto-1.0.1.tgz",
+      "integrity": "sha512-KIN/nDJBQRcXw0MLVhZE9iQHmG68qAVIBg9CqmUYjmQIhgij9U5MFvrqkUL5FbtyyzZuOeOt0zdeRe4UY7ct+A==",
+      "license": "MIT",
+      "dependencies": {
+        "call-bind-apply-helpers": "^1.0.1",
+        "es-errors": "^1.3.0",
+        "gopd": "^1.2.0"
+      },
+      "engines": {
+        "node": ">= 0.4"
+      }
+    },
+    "node_modules/es-define-property": {
+      "version": "1.0.1",
+      "resolved": "https://registry.npmjs.org/es-define-property/-/es-define-property-1.0.1.tgz",
+      "integrity": "sha512-e3nRfgfUZ4rNGL232gUgX06QNyyez04KdjFrF+LTRoOXmrOgFKDg4BCdsjW8EnT69eqdYGmRpJwiPVYNrCaW3g==",
+      "license": "MIT",
+      "engines": {
+        "node": ">= 0.4"
+      }
+    },
+    "node_modules/es-errors": {
+      "version": "1.3.0",
+      "resolved": "https://registry.npmjs.org/es-errors/-/es-errors-1.3.0.tgz",
+      "integrity": "sha512-Zf5H2Kxt2xjTvbJvP2ZWLEICxA6j+hAmMzIlypy4xcBg1vKVnx89Wy0GbS+kf5cwCVFFzdCFh2XSCFNULS6csw==",
+      "license": "MIT",
+      "engines": {
+        "node": ">= 0.4"
+      }
+    },
+    "node_modules/es-object-atoms": {
+      "version": "1.1.1",
+      "resolved": "https://registry.npmjs.org/es-object-atoms/-/es-object-atoms-1.1.1.tgz",
+      "integrity": "sha512-FGgH2h8zKNim9ljj7dankFPcICIK9Cp5bm+c2gQSYePhpaG5+esrLODihIorn+Pe6FGJzWhXQotPv73jTaldXA==",
+      "license": "MIT",
+      "dependencies": {
+        "es-errors": "^1.3.0"
+      },
+      "engines": {
+        "node": ">= 0.4"
+      }
+    },
+    "node_modules/es-set-tostringtag": {
+      "version": "2.1.0",
+      "resolved": "https://registry.npmjs.org/es-set-tostringtag/-/es-set-tostringtag-2.1.0.tgz",
+      "integrity": "sha512-j6vWzfrGVfyXxge+O0x5sh6cvxAog0a/4Rdd2K36zCMV5eJ+/+tOAngRO8cODMNWbVRdVlmGZQL2YS3yR8bIUA==",
+      "license": "MIT",
+      "dependencies": {
+        "es-errors": "^1.3.0",
+        "get-intrinsic": "^1.2.6",
+        "has-tostringtag": "^1.0.2",
+        "hasown": "^2.0.2"
+      },
+      "engines": {
+        "node": ">= 0.4"
+      }
+    },
+    "node_modules/follow-redirects": {
+      "version": "1.15.11",
+      "resolved": "https://registry.npmjs.org/follow-redirects/-/follow-redirects-1.15.11.tgz",
+      "integrity": "sha512-deG2P0JfjrTxl50XGCDyfI97ZGVCxIpfKYmfyrQ54n5FO/0gfIES8C/Psl6kWVDolizcaaxZJnTS0QSMxvnsBQ==",
+      "funding": [
+        {
+          "type": "individual",
+          "url": "https://github.com/sponsors/RubenVerborgh"
+        }
+      ],
+      "license": "MIT",
+      "engines": {
+        "node": ">=4.0"
+      },
+      "peerDependenciesMeta": {
+        "debug": {
+          "optional": true
+        }
+      }
+    },
+    "node_modules/form-data": {
+      "version": "4.0.5",
+      "resolved": "https://registry.npmjs.org/form-data/-/form-data-4.0.5.tgz",
+      "integrity": "sha512-8RipRLol37bNs2bhoV67fiTEvdTrbMUYcFTiy3+wuuOnUog2QBHCZWXDRijWQfAkhBj2Uf5UnVaiWwA5vdd82w==",
+      "license": "MIT",
+      "dependencies": {
+        "asynckit": "^0.4.0",
+        "combined-stream": "^1.0.8",
+        "es-set-tostringtag": "^2.1.0",
+        "hasown": "^2.0.2",
+        "mime-types": "^2.1.12"
+      },
+      "engines": {
+        "node": ">= 6"
+      }
+    },
+    "node_modules/function-bind": {
+      "version": "1.1.2",
+      "resolved": "https://registry.npmjs.org/function-bind/-/function-bind-1.1.2.tgz",
+      "integrity": "sha512-7XHNxH7qX9xG5mIwxkhumTox/MIRNcOgDrxWsMt2pAr23WHp6MrRlN7FBSFpCpr+oVO0F744iUgR82nJMfG2SA==",
+      "license": "MIT",
+      "funding": {
+        "url": "https://github.com/sponsors/ljharb"
+      }
+    },
+    "node_modules/get-intrinsic": {
+      "version": "1.3.0",
+      "resolved": "https://registry.npmjs.org/get-intrinsic/-/get-intrinsic-1.3.0.tgz",
+      "integrity": "sha512-9fSjSaos/fRIVIp+xSJlE6lfwhES7LNtKaCBIamHsjr2na1BiABJPo0mOjjz8GJDURarmCPGqaiVg5mfjb98CQ==",
+      "license": "MIT",
+      "dependencies": {
+        "call-bind-apply-helpers": "^1.0.2",
+        "es-define-property": "^1.0.1",
+        "es-errors": "^1.3.0",
+        "es-object-atoms": "^1.1.1",
+        "function-bind": "^1.1.2",
+        "get-proto": "^1.0.1",
+        "gopd": "^1.2.0",
+        "has-symbols": "^1.1.0",
+        "hasown": "^2.0.2",
+        "math-intrinsics": "^1.1.0"
+      },
+      "engines": {
+        "node": ">= 0.4"
+      },
+      "funding": {
+        "url": "https://github.com/sponsors/ljharb"
+      }
+    },
+    "node_modules/get-proto": {
+      "version": "1.0.1",
+      "resolved": "https://registry.npmjs.org/get-proto/-/get-proto-1.0.1.tgz",
+      "integrity": "sha512-sTSfBjoXBp89JvIKIefqw7U2CCebsc74kiY6awiGogKtoSGbgjYE/G/+l9sF3MWFPNc9IcoOC4ODfKHfxFmp0g==",
+      "license": "MIT",
+      "dependencies": {
+        "dunder-proto": "^1.0.1",
+        "es-object-atoms": "^1.0.0"
+      },
+      "engines": {
+        "node": ">= 0.4"
+      }
+    },
+    "node_modules/gopd": {
+      "version": "1.2.0",
+      "resolved": "https://registry.npmjs.org/gopd/-/gopd-1.2.0.tgz",
+      "integrity": "sha512-ZUKRh6/kUFoAiTAtTYPZJ3hw9wNxx+BIBOijnlG9PnrJsCcSjs1wyyD6vJpaYtgnzDrKYRSqf3OO6Rfa93xsRg==",
+      "license": "MIT",
+      "engines": {
+        "node": ">= 0.4"
+      },
+      "funding": {
+        "url": "https://github.com/sponsors/ljharb"
+      }
+    },
+    "node_modules/has-symbols": {
+      "version": "1.1.0",
+      "resolved": "https://registry.npmjs.org/has-symbols/-/has-symbols-1.1.0.tgz",
+      "integrity": "sha512-1cDNdwJ2Jaohmb3sg4OmKaMBwuC48sYni5HUw2DvsC8LjGTLK9h+eb1X6RyuOHe4hT0ULCW68iomhjUoKUqlPQ==",
+      "license": "MIT",
+      "engines": {
+        "node": ">= 0.4"
+      },
+      "funding": {
+        "url": "https://github.com/sponsors/ljharb"
+      }
+    },
+    "node_modules/has-tostringtag": {
+      "version": "1.0.2",
+      "resolved": "https://registry.npmjs.org/has-tostringtag/-/has-tostringtag-1.0.2.tgz",
+      "integrity": "sha512-NqADB8VjPFLM2V0VvHUewwwsw0ZWBaIdgo+ieHtK3hasLz4qeCRjYcqfB6AQrBggRKppKF8L52/VqdVsO47Dlw==",
+      "license": "MIT",
+      "dependencies": {
+        "has-symbols": "^1.0.3"
+      },
+      "engines": {
+        "node": ">= 0.4"
+      },
+      "funding": {
+        "url": "https://github.com/sponsors/ljharb"
+      }
+    },
+    "node_modules/hasown": {
+      "version": "2.0.2",
+      "resolved": "https://registry.npmjs.org/hasown/-/hasown-2.0.2.tgz",
+      "integrity": "sha512-0hJU9SCPvmMzIBdZFqNPXWa6dqh7WdH0cII9y+CyS8rG3nL48Bclra9HmKhVVUHyPWNH5Y7xDwAB7bfgSjkUMQ==",
+      "license": "MIT",
+      "dependencies": {
+        "function-bind": "^1.1.2"
+      },
+      "engines": {
+        "node": ">= 0.4"
+      }
+    },
+    "node_modules/inherits": {
+      "version": "2.0.3",
+      "resolved": "https://registry.npmjs.org/inherits/-/inherits-2.0.3.tgz",
+      "integrity": "sha512-x00IRNXNy63jwGkJmzPigoySHbaqpNuzKbBOmzK+g2OdZpQ9w+sxCN+VSB3ja7IAge2OP2qpfxTjeNcyjmW1uw==",
+      "license": "ISC"
+    },
+    "node_modules/math-intrinsics": {
+      "version": "1.1.0",
+      "resolved": "https://registry.npmjs.org/math-intrinsics/-/math-intrinsics-1.1.0.tgz",
+      "integrity": "sha512-/IXtbwEk5HTPyEwyKX6hGkYXxM9nbj64B+ilVJnC/R6B0pH5G4V3b0pVbL7DBj4tkhBAppbQUlf6F6Xl9LHu1g==",
+      "license": "MIT",
+      "engines": {
+        "node": ">= 0.4"
+      }
+    },
+    "node_modules/mime-db": {
+      "version": "1.52.0",
+      "resolved": "https://registry.npmjs.org/mime-db/-/mime-db-1.52.0.tgz",
+      "integrity": "sha512-sPU4uV7dYlvtWJxwwxHD0PuihVNiE7TyAbQ5SWxDCB9mUYvOgroQOwYQQOKPJ8CIbE+1ETVlOoK1UC2nU3gYvg==",
+      "license": "MIT",
+      "engines": {
+        "node": ">= 0.6"
+      }
+    },
+    "node_modules/mime-types": {
+      "version": "2.1.35",
+      "resolved": "https://registry.npmjs.org/mime-types/-/mime-types-2.1.35.tgz",
+      "integrity": "sha512-ZDY+bPm5zTTF+YpCrAU9nK0UgICYPT0QtT1NZWFv4s++TNkcgVaT0g6+4R2uI4MjQjzysHB1zxuWL50hzaeXiw==",
+      "license": "MIT",
+      "dependencies": {
+        "mime-db": "1.52.0"
+      },
+      "engines": {
+        "node": ">= 0.6"
+      }
+    },
+    "node_modules/path": {
+      "version": "0.12.7",
+      "resolved": "https://registry.npmjs.org/path/-/path-0.12.7.tgz",
+      "integrity": "sha512-aXXC6s+1w7otVF9UletFkFcDsJeO7lSZBPUQhtb5O0xJe8LtYhj/GxldoL09bBj9+ZmE2hNoHqQSFMN5fikh4Q==",
+      "license": "MIT",
+      "dependencies": {
+        "process": "^0.11.1",
+        "util": "^0.10.3"
+      }
+    },
+    "node_modules/process": {
+      "version": "0.11.10",
+      "resolved": "https://registry.npmjs.org/process/-/process-0.11.10.tgz",
+      "integrity": "sha512-cdGef/drWFoydD1JsMzuFf8100nZl+GT+yacc2bEced5f9Rjk4z+WtFUTBu9PhOi9j/jfmBPu0mMEY4wIdAF8A==",
+      "license": "MIT",
+      "engines": {
+        "node": ">= 0.6.0"
+      }
+    },
+    "node_modules/proxy-from-env": {
+      "version": "1.1.0",
+      "resolved": "https://registry.npmjs.org/proxy-from-env/-/proxy-from-env-1.1.0.tgz",
+      "integrity": "sha512-D+zkORCbA9f1tdWRK0RaCR3GPv50cMxcrz4X8k5LTSUD1Dkw47mKJEZQNunItRTkWwgtaUSo1RVFRIG9ZXiFYg==",
+      "license": "MIT"
+    },
+    "node_modules/typescript": {
+      "version": "5.9.3",
+      "resolved": "https://registry.npmjs.org/typescript/-/typescript-5.9.3.tgz",
+      "integrity": "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==",
+      "dev": true,
+      "license": "Apache-2.0",
+      "bin": {
+        "tsc": "bin/tsc",
+        "tsserver": "bin/tsserver"
+      },
+      "engines": {
+        "node": ">=14.17"
+      }
+    },
+    "node_modules/undici-types": {
+      "version": "6.21.0",
+      "resolved": "https://registry.npmjs.org/undici-types/-/undici-types-6.21.0.tgz",
+      "integrity": "sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ==",
+      "dev": true,
+      "license": "MIT"
+    },
+    "node_modules/util": {
+      "version": "0.10.4",
+      "resolved": "https://registry.npmjs.org/util/-/util-0.10.4.tgz",
+      "integrity": "sha512-0Pm9hTQ3se5ll1XihRic3FDIku70C+iHUdT/W926rSgHV5QgXsYbKZN8MSC3tJtSkhuROzvsQjAaFENRXr+19A==",
+      "license": "MIT",
+      "dependencies": {
+        "inherits": "2.0.3"
+      }
+    }
+  }
+}
+
+
+===== FILE: package.json =====
+
+{
+  "name": "om-ai-pro",
+  "displayName": "Om AI Pro",
+  "version": "0.1.0",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "*"
+  ],
+  "main": "./out/1_extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "om-ai-sidebar",
+          "title": "Om AI",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "om-ai-sidebar": [
+        {
+          "id": "om-ai-chat-view",
+          "name": "Chat",
+          "type": "webview"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "om-ai.openRules",
+        "title": "Om AI: Open Project Rules (.om-ai-rules.md)",
+        "category": "Om AI"
+      },
+      {
+        "command": "om-ai.openChat",
+        "title": "Om AI: Open Chat",
+        "category": "Om AI"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "om-ai.openChat",
+          "group": "om-ai@1",
+          "when": "editorHasSelection"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "om-ai.openRules"
+        },
+        {
+          "command": "om-ai.openChat"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "axios": "^1.13.6",
+    "path": "^0.12.7"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.35",
+    "@types/vscode": "^1.109.0",
+    "typescript": "^5.9.3"
+  }
+}
+
+===== FILE: src\10_retryLoop.ts =====
+
 import { callBrain } from './3_client';
 import { BrainResponse } from './5_types';
 
@@ -306,8 +1899,10 @@ export async function runWithRetry(payload: Payload): Promise<BrainResponse> {
     for (let i = 0; i < 3; i++) {
 
         const res = await callBrain(payload);
-
+console.log("RAW AI RESPONSE:");
+console.log(res);
         if (res.success && Array.isArray(res.changes) && res.changes.length) {
+            
             return res;
         }
 
@@ -316,13 +1911,9 @@ export async function runWithRetry(payload: Payload): Promise<BrainResponse> {
 
     return { success: false, changes: [] };
 }
-```
 
----
+===== FILE: src\11_astPatcher.ts =====
 
-# 1️⃣1️⃣ 11_astPatcher.ts
-
-```ts
 import * as ts from 'typescript';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -354,18 +1945,21 @@ export async function applyAstSafePatches(
             true
         );
 
-        if (check.parseDiagnostics.length === 0) {
+        const diagnostics = ts.getPreEmitDiagnostics(
+    ts.createProgram({
+        rootNames: [patch.path],
+        options: {}
+    })
+);
+
+if (diagnostics.length === 0) {
             fs.writeFileSync(fullPath, updated);
         }
     }
 }
-```
 
----
+===== FILE: src\12_diffPreview.ts =====
 
-# 1️⃣2️⃣ 12_diffPreview.ts
-
-```ts
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -411,13 +2005,9 @@ export async function showDiffPreview(
 
     return choice === 'Apply Changes';
 }
-```
 
----
+===== FILE: src\13_terminalTool.ts =====
 
-# 1️⃣3️⃣ 13_terminalTool.ts
-
-```ts
 import { exec } from 'child_process';
 
 export function runCommand(cmd: string, cwd: string) {
@@ -428,63 +2018,972 @@ export function runCommand(cmd: string, cwd: string) {
         });
     });
 }
-```
 
----
+===== FILE: src\14_testRunner.ts =====
 
-# 1️⃣4️⃣ 14_testRunner.ts
-
-```ts
 import { runCommand } from './13_terminalTool';
 
 export async function runTests(root: string) {
     await runCommand('npm test --silent', root);
 }
-```
 
----
+===== FILE: src\15_slashCommands.ts =====
 
-# 📦 package.json
+import * as vscode from 'vscode';
+import * as fs from 'fs';
+import * as path from 'path';
+import { callBrain } from './3_client';
+import { runCommand } from './13_terminalTool';
 
-```json
-{
-  "name": "om-ai-pro",
-  "displayName": "Om AI Pro",
-  "version": "0.0.1",
-  "engines": { "vscode": "^1.85.0" },
-  "activationEvents": ["onCommand:om-ai-pro.openChat"],
-  "main": "./out/1_extension.js",
-  "contributes": {
-    "commands": [
-      {
-        "command": "om-ai-pro.openChat",
-        "title": "Open Om AI Chat"
-      }
-    ]
-  },
-  "dependencies": {
-    "axios": "^1.6.0",
-    "typescript": "^5.3.0"
-  }
+export type SlashResult =
+    | { kind: 'explain'; text: string }
+    | { kind: 'fix'; text: string }
+    | { kind: 'doc'; text: string }
+    | { kind: 'test'; text: string }
+    | { kind: 'commit'; text: string }
+    | { kind: 'passthrough'; instruction: string };
+
+/**
+ * Parse a user message and dispatch slash commands.
+ * Returns SlashResult so the caller decides how to render it.
+ */
+export async function handleSlashCommand(raw: string): Promise<SlashResult> {
+    const trimmed = raw.trim();
+
+    // ── /explain ──────────────────────────────────────────────
+    if (trimmed.startsWith('/explain')) {
+        const selection = getEditorSelection();
+        if (!selection) {
+            return { kind: 'explain', text: '⚠️ No code selected. Select code in the editor first.' };
+        }
+        const res = await callBrain({
+            instruction: `Explain the following code clearly and concisely:\n\n${selection}`,
+            summary: '',
+            semanticContext: []
+        });
+        const text = res.success
+            ? (res as any).explanation ?? JSON.stringify(res)
+            : (res as any).raw ?? 'Could not explain.';
+        return { kind: 'explain', text };
+    }
+
+    // ── /fix ──────────────────────────────────────────────────
+    if (trimmed.startsWith('/fix')) {
+        const selection = getEditorSelection();
+        const extra = trimmed.replace('/fix', '').trim();
+        const instruction = selection
+            ? `Fix the following code${extra ? ` — ${extra}` : ''}:\n\n${selection}`
+            : `Fix: ${extra}`;
+        return { kind: 'fix', instruction } as unknown as SlashResult;
+        // Delegate actual patching back to the extension host
+    }
+
+    // ── /doc ──────────────────────────────────────────────────
+    if (trimmed.startsWith('/doc')) {
+        const selection = getEditorSelection();
+        if (!selection) {
+            return { kind: 'doc', text: '⚠️ No code selected. Select code in the editor first.' };
+        }
+        const res = await callBrain({
+            instruction: `Write JSDoc / TSDoc comments for the following code. Return only the commented code, no explanation:\n\n${selection}`,
+            summary: '',
+            semanticContext: []
+        });
+        const text = (res as any).raw ?? JSON.stringify(res);
+        return { kind: 'doc', text };
+    }
+
+    // ── /test ──────────────────────────────────────────────────
+    if (trimmed.startsWith('/test')) {
+        const selection = getEditorSelection();
+        const extra = trimmed.replace('/test', '').trim();
+        const code = selection ?? extra;
+        const res = await callBrain({
+            instruction: `Write Jest unit tests for the following code. Return only the test file content:\n\n${code}`,
+            summary: '',
+            semanticContext: []
+        });
+        const text = (res as any).raw ?? JSON.stringify(res);
+        return { kind: 'test', text };
+    }
+
+    // ── /commit ────────────────────────────────────────────────
+    if (trimmed.startsWith('/commit')) {
+        const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (!root) {
+            return { kind: 'commit', text: '⚠️ No workspace open.' };
+        }
+        const { stdout } = await runCommand('git diff --cached --stat', root) as any;
+        const diff = stdout?.slice(0, 3000) ?? '';
+        if (!diff.trim()) {
+            return { kind: 'commit', text: '⚠️ No staged changes found. Run `git add` first.' };
+        }
+        const res = await callBrain({
+            instruction: `Generate a concise conventional commit message (type(scope): description) for this git diff:\n\n${diff}`,
+            summary: '',
+            semanticContext: []
+        });
+        const text = (res as any).raw ?? JSON.stringify(res);
+        return { kind: 'commit', text: `Suggested commit message:\n\n${text.trim()}` };
+    }
+
+    // ── not a slash command ─────────────────────────────────────
+    return { kind: 'passthrough', instruction: raw };
 }
-```
 
----
+/**
+ * Return the currently selected text in the active editor, or null.
+ */
+function getEditorSelection(): string | null {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) return null;
+    const sel = editor.selection;
+    if (sel.isEmpty) return null;
+    return editor.document.getText(sel);
+}
 
-# 📦 tsconfig.json
+===== FILE: src\16_rulesLoader.ts =====
 
-```json
+import * as vscode from 'vscode';
+import * as fs from 'fs';
+import * as path from 'path';
+
+const RULES_FILE = '.om-ai-rules.md';
+
+/**
+ * Load project-level AI rules from `.om-ai-rules.md` in the workspace root.
+ * Similar to Cursor's `.cursorrules` — injected into every prompt.
+ */
+export function loadProjectRules(): string {
+    const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (!root) return '';
+
+    const rulesPath = path.join(root, RULES_FILE);
+    if (!fs.existsSync(rulesPath)) return '';
+
+    try {
+        const content = fs.readFileSync(rulesPath, 'utf-8').trim();
+        return content ? `\n\n## Project Rules (from ${RULES_FILE})\n${content}` : '';
+    } catch {
+        return '';
+    }
+}
+
+/**
+ * Create a default .om-ai-rules.md if one doesn't exist.
+ */
+export async function initRulesFile(): Promise<void> {
+    const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (!root) return;
+
+    const rulesPath = path.join(root, RULES_FILE);
+    if (fs.existsSync(rulesPath)) {
+        // Open it so the user can see it
+        const doc = await vscode.workspace.openTextDocument(rulesPath);
+        await vscode.window.showTextDocument(doc);
+        return;
+    }
+
+    const defaultRules = `# Om AI Rules
+
+## Code Style
+- Use TypeScript strict mode
+- Prefer async/await over callbacks
+- Use descriptive variable names
+
+## Architecture
+- Keep functions under 40 lines
+- Separate concerns: one file per responsibility
+
+## Testing
+- Every exported function should have a unit test
+- Use Jest for testing
+
+## Commit Messages
+- Follow conventional commits: type(scope): description
+`;
+
+    fs.writeFileSync(rulesPath, defaultRules, 'utf-8');
+    const doc = await vscode.workspace.openTextDocument(rulesPath);
+    await vscode.window.showTextDocument(doc);
+    vscode.window.showInformationMessage(`Created ${RULES_FILE} — edit it to guide AI behaviour across all prompts.`);
+}
+
+===== FILE: src\17_statusBar.ts =====
+
+import * as vscode from 'vscode';
+
+type AIState = 'idle' | 'thinking' | 'patching' | 'done' | 'error';
+
+let _bar: vscode.StatusBarItem | undefined;
+
+export function createStatusBar(context: vscode.ExtensionContext): void {
+    _bar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
+    _bar.command = 'om-ai.openChat';
+    context.subscriptions.push(_bar);
+    setState('idle');
+    _bar.show();
+}
+
+export function setState(state: AIState, detail?: string): void {
+    if (!_bar) return;
+
+    const labels: Record<AIState, string> = {
+        idle:     '$(sparkle) Om AI',
+        thinking: '$(loading~spin) Om AI: Thinking…',
+        patching: '$(edit) Om AI: Patching…',
+        done:     '$(check) Om AI: Done',
+        error:    '$(error) Om AI: Error',
+    };
+
+    _bar.text = labels[state];
+    _bar.tooltip = detail ?? 'Om AI Pro';
+
+    // Auto-reset non-idle states after 4 s
+    if (state === 'done' || state === 'error') {
+        setTimeout(() => setState('idle'), 4000);
+    }
+}
+
+===== FILE: src\1_extension.ts =====
+
+import * as vscode from 'vscode';
+import { ensureProjectSummary } from './7_summary';
+import { semanticSearch } from './8_embeddings';
+import { runWithRetry } from './10_retryLoop';
+import { showDiffPreview } from './12_diffPreview';
+import { applyAstSafePatches } from './11_astPatcher';
+import { runTests } from './14_testRunner';
+import { ChatViewProvider } from './chat/panel';
+import { handleSlashCommand } from './15_slashCommands';
+import { loadProjectRules, initRulesFile } from './16_rulesLoader';
+import { createStatusBar, setState } from './17_statusBar';
+
+const INPUT_COST_PER_MILLION  = 0.05;
+const OUTPUT_COST_PER_MILLION = 0.4;
+
+export function activate(context: vscode.ExtensionContext) {
+
+    // ── Status bar ───────────────────────────────────────────────
+    createStatusBar(context);
+
+    // ── Chat panel ───────────────────────────────────────────────
+    const provider = new ChatViewProvider(context.extensionUri);
+
+    context.subscriptions.push(
+        vscode.window.registerWebviewViewProvider(
+            ChatViewProvider.viewType,
+            provider
+        )
+    );
+
+    // ── Command: open rules file ─────────────────────────────────
+    context.subscriptions.push(
+        vscode.commands.registerCommand('om-ai.openRules', () => initRulesFile())
+    );
+
+    // ── Command: focus chat (used by status bar) ─────────────────
+    context.subscriptions.push(
+        vscode.commands.registerCommand('om-ai.openChat', () =>
+            vscode.commands.executeCommand('workbench.view.extension.om-ai-sidebar')
+        )
+    );
+
+    // ── Message handler ──────────────────────────────────────────
+    provider.onMessage(async (raw: string) => {
+
+        try {
+            setState('thinking');
+            provider.postLog('Prompt received');
+
+            if (!raw || raw.trim().length === 0) {
+                provider.postLog('⚠️ Empty prompt.');
+                setState('idle');
+                return;
+            }
+
+            // ── Slash command dispatch ───────────────────────────
+            const slashResult = await handleSlashCommand(raw);
+
+            if (slashResult.kind !== 'passthrough') {
+                // Slash commands that only need a text reply
+                const simpleKinds = ['explain', 'doc', 'test', 'commit'] as const;
+                if (simpleKinds.includes(slashResult.kind as any)) {
+                    provider.postMessage((slashResult as any).text);
+                    setState('done');
+                    return;
+                }
+
+                // /fix — rewrite instruction and fall through to patcher
+                if (slashResult.kind === 'fix') {
+                    const fixResult = slashResult as any;
+                    provider.postLog('/fix — delegating to patcher…');
+                    // replace raw with the synthesised instruction
+                    return await runPatchFlow(
+                        fixResult.instruction,
+                        provider
+                    );
+                }
+            }
+
+            // ── Normal (non-slash) prompt ────────────────────────
+            await runPatchFlow(raw, provider);
+
+        } catch (err: any) {
+            console.error('Extension runtime error:', err);
+            provider.postLog(`❌ Runtime error: ${err?.message ?? JSON.stringify(err)}`);
+            setState('error', err?.message);
+        }
+    });
+}
+
+// ── Core patch pipeline ──────────────────────────────────────────
+async function runPatchFlow(instruction: string, provider: ChatViewProvider) {
+
+    const workspace = vscode.workspace.workspaceFolders?.[0];
+    if (!workspace) {
+        provider.postLog('❌ No workspace folder open.');
+        setState('idle');
+        return;
+    }
+
+    const root = workspace.uri.fsPath;
+
+    // Load project rules (like .cursorrules)
+    const projectRules = loadProjectRules();
+    if (projectRules) {
+        provider.postLog('📋 Project rules loaded.');
+    }
+
+    provider.postLog('Building project summary…');
+    const summary = await ensureProjectSummary();
+
+    provider.postLog('Running semantic search…');
+    const semanticContext = await semanticSearch(instruction);
+    provider.postLog(`Relevant files: ${semanticContext.length}`);
+
+    // Token estimation
+    const contextChars = semanticContext.reduce((s, f) => s + (f.content?.length ?? 0), 0);
+    const estimatedTokens = Math.round(contextChars / 4);
+    provider.postLog(`Estimated prompt tokens: ~${estimatedTokens}`);
+    provider.postLog(`Estimated input cost: $${((estimatedTokens / 1_000_000) * INPUT_COST_PER_MILLION).toFixed(6)}`);
+
+    provider.postLog('Calling AI model…');
+    setState('thinking');
+
+    const result = await runWithRetry({
+        instruction: instruction + projectRules,   // ← rules injected here
+        summary,
+        semanticContext
+    });
+
+    if (!result) {
+        provider.postLog('❌ AI returned empty response.');
+        setState('error');
+        return;
+    }
+
+    // Actual token cost from response
+    if ((result as any).usage) {
+        const u = (result as any).usage;
+        const pt  = u.promptTokenCount     ?? 0;
+        const ct  = u.candidatesTokenCount ?? 0;
+        const ic  = (pt / 1_000_000) * INPUT_COST_PER_MILLION;
+        const oc  = (ct / 1_000_000) * OUTPUT_COST_PER_MILLION;
+        provider.postLog(`Tokens — prompt: ${pt}, completion: ${ct} | Cost: $${(ic + oc).toFixed(6)}`);
+    }
+
+    if (!result.success) {
+        provider.postLog('❌ AI failed to generate valid patches.');
+        if ((result as any).raw) {
+            provider.postLog('Model said: ' + (result as any).raw.slice(0, 800));
+        }
+        setState('error');
+        return;
+    }
+
+    if (!Array.isArray(result.changes) || result.changes.length === 0) {
+        provider.postLog('⚠️ AI returned no code changes.');
+        setState('idle');
+        return;
+    }
+
+    provider.postLog(`Generated ${result.changes.length} patch(es). Opening diff preview…`);
+
+    const approved = await showDiffPreview(result.changes, root);
+    if (!approved) {
+        provider.postLog('⚠️ User cancelled patch.');
+        setState('idle');
+        return;
+    }
+
+    setState('patching');
+    provider.postLog('Applying patches…');
+    await applyAstSafePatches(result.changes, root);
+
+    provider.postLog('Running tests…');
+    await runTests(root);
+
+    provider.postLog('✅ Completed successfully.');
+    setState('done');
+}
+
+export function deactivate() {}
+
+===== FILE: src\2_indexer.ts =====
+
+import * as vscode from 'vscode';
+
+export async function indexProject() {
+    return vscode.workspace.findFiles(
+        '**/*.{ts,tsx,js,jsx}',
+        '**/{node_modules,dist,.git}/**'
+    );
+}
+
+===== FILE: src\3_client.ts =====
+
+import { GoogleGenerativeAI } from "@google/generative-ai";
+
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "AIzaSyCsUW2S4cUL7I9NFDfKS-qPjWOTdGgQiWU");
+
+export async function callBrain(payload: any) {
+
+    const model = genAI.getGenerativeModel({
+        model: "gemini-2.5-flash"
+    });
+
+    const prompt = `
+You are an AI coding agent.
+
+Return ONLY valid JSON in this format:
+
+{
+ "success": true,
+ "changes": [
+  {
+   "path": "relative/file/path.js",
+   "edits": [
+    {
+     "startLine": number,
+     "endLine": number,
+     "newText": "replacement code"
+    }
+   ]
+  }
+ ]
+}
+
+Rules:
+- Return JSON only
+- No explanation
+- No markdown
+- Only modify existing files
+
+Instruction:
+${JSON.stringify(payload)}
+`;
+
+    const result = await model.generateContent(prompt);
+
+    const text = result.response.text();
+
+    console.log("========== RAW MODEL RESPONSE ==========");
+    console.log(text);
+    console.log("========================================");
+
+    try {
+        return JSON.parse(text);
+    } catch (err) {
+
+        console.log("JSON PARSE FAILED");
+        console.log(err);
+
+        return {
+            success: false,
+            changes: [],
+            raw: text
+        };
+    }
+}
+
+export async function callEmbeddingAPI(text: string) {
+    return [];
+}
+
+===== FILE: src\4_patcher.ts =====
+
+export {};
+
+===== FILE: src\5_types.ts =====
+
+export interface FileEdit {
+    startLine: number;
+    endLine: number;
+    newText: string;
+}
+
+export interface FilePatch {
+    path: string;
+    edits: FileEdit[];
+}
+
+export interface BrainResponse {
+    success: boolean;
+    changes: FilePatch[];
+}
+
+===== FILE: src\6_relevance.ts =====
+
+export {};
+
+===== FILE: src\7_summary.ts =====
+
+import * as vscode from 'vscode';
+
+export async function ensureProjectSummary() {
+
+    const files = await vscode.workspace.findFiles(
+        '**/*.{ts,tsx,js,jsx}',
+        '**/{node_modules,dist,.git}/**'
+    );
+
+    return `Project contains ${files.length} source files.`;
+}
+
+===== FILE: src\8_embeddings.ts =====
+
+import * as vscode from 'vscode';
+import * as path from 'path';
+import { getEmbedding } from './9_vectorStore';
+
+export async function semanticSearch(query: string) {
+
+    const root = vscode.workspace.workspaceFolders?.[0].uri.fsPath;
+    if (!root) return [];
+
+    const files = await vscode.workspace.findFiles(
+        '**/*.{ts,tsx,js,jsx}',
+        '**/{node_modules,dist,.git}/**'
+    );
+
+    const queryEmbedding = await getEmbedding(query);
+    const scored = [];
+
+    for (const file of files) {
+
+        const doc = await vscode.workspace.openTextDocument(file);
+        const content = doc.getText().slice(0, 8000);
+
+        const emb = await getEmbedding(content);
+        const score = cosineSimilarity(queryEmbedding, emb);
+
+        scored.push({
+            path: path.relative(root, file.fsPath),
+            content,
+            score
+        });
+    }
+
+    scored.sort((a, b) => b.score - a.score);
+
+    return scored.slice(0, 3);
+}
+
+function cosineSimilarity(a: number[], b: number[]) {
+    const dot = a.reduce((s, v, i) => s + v * b[i], 0);
+    const magA = Math.sqrt(a.reduce((s, v) => s + v * v, 0));
+    const magB = Math.sqrt(b.reduce((s, v) => s + v * v, 0));
+    return dot / (magA * magB);
+}
+
+===== FILE: src\9_vectorStore.ts =====
+
+import * as fs from 'fs';
+import * as path from 'path';
+import { callEmbeddingAPI } from './3_client';
+
+const DB_PATH = path.join(process.cwd(), '.om-ai-vectors.json');
+
+interface Store {
+    [key: string]: number[];
+}
+
+let cache: Store = {};
+
+if (fs.existsSync(DB_PATH)) {
+    cache = JSON.parse(fs.readFileSync(DB_PATH, 'utf-8'));
+}
+
+export async function getEmbedding(text: string) {
+
+    if (cache[text]) return cache[text];
+
+    const vector = await callEmbeddingAPI(text);
+    cache[text] = vector;
+
+    fs.writeFileSync(DB_PATH, JSON.stringify(cache));
+
+    return vector;
+}
+
+===== FILE: src\chat\panel.ts =====
+
+import * as vscode from 'vscode';
+
+export class ChatViewProvider implements vscode.WebviewViewProvider {
+
+    public static readonly viewType = 'om-ai-chat-view';
+
+    private _view?: vscode.WebviewView;
+    private _onMessage?: (msg: string) => void;
+
+    constructor(private readonly extensionUri: vscode.Uri) {}
+
+    resolveWebviewView(
+        webviewView: vscode.WebviewView,
+        _context: vscode.WebviewViewResolveContext,
+        _token: vscode.CancellationToken
+    ) {
+        this._view = webviewView;
+
+        webviewView.webview.options = { enableScripts: true };
+        webviewView.webview.html = this.getHtml();
+
+        webviewView.webview.onDidReceiveMessage(msg => {
+            if (msg.type === 'prompt' && this._onMessage) {
+                this._onMessage(msg.text);
+            }
+            if (msg.type === 'clearHistory') {
+                // Just acknowledged — history lives in webview state
+            }
+        });
+    }
+
+    public onMessage(cb: (msg: string) => void) {
+        this._onMessage = cb;
+    }
+
+    /** Log a status line (assistant bubble, grey style) */
+    public postLog(text: string) {
+        this._post({ type: 'log', text });
+    }
+
+    /** Post a full AI reply (assistant bubble, normal style) */
+    public postMessage(text: string) {
+        this._post({ type: 'assistant', text });
+    }
+
+    private _post(payload: object) {
+        if (!this._view) return;
+        this._view.webview.postMessage(payload);
+    }
+
+    private getHtml() {
+        return /* html */`
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<style>
+:root {
+    --bg:           var(--vscode-sideBar-background);
+    --border:       var(--vscode-editorWidget-border);
+    --text:         var(--vscode-editor-foreground);
+    --text-muted:   var(--vscode-descriptionForeground);
+    --input-bg:     var(--vscode-input-background);
+    --input-border: var(--vscode-input-border);
+    --btn-bg:       var(--vscode-button-background);
+    --btn-hover:    var(--vscode-button-hoverBackground);
+    --btn-text:     var(--vscode-button-foreground);
+    --log-bg:       var(--vscode-editor-inactiveSelectionBackground);
+    --user-bg:      var(--vscode-button-background);
+    --radius:       8px;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--vscode-font-family);
+    font-size: 13px;
+    display: flex;
+    flex-direction: column;
+}
+
+/* ── toolbar ── */
+#toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--border);
+    gap: 4px;
+}
+#toolbar span { font-size: 11px; color: var(--text-muted); }
+#clearBtn {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    border-radius: 4px;
+    padding: 2px 8px;
+    cursor: pointer;
+    font-size: 11px;
+}
+#clearBtn:hover { color: var(--text); border-color: var(--text-muted); }
+
+/* ── chat area ── */
+#chat {
+    flex: 1;
+    overflow-y: auto;
+    padding: 10px 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.message {
+    max-width: 92%;
+    padding: 7px 11px;
+    border-radius: var(--radius);
+    line-height: 1.45;
+    word-wrap: break-word;
+    white-space: pre-wrap;
+}
+.user {
+    align-self: flex-end;
+    background: var(--user-bg);
+    color: var(--btn-text);
+    border-bottom-right-radius: 2px;
+}
+.assistant {
+    align-self: flex-start;
+    background: var(--log-bg);
+    border-bottom-left-radius: 2px;
+}
+.log {
+    align-self: flex-start;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 11px;
+    padding: 2px 4px;
+}
+
+/* ── slash hints ── */
+#hints {
+    display: none;
+    flex-direction: column;
+    background: var(--input-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    margin: 0 8px 4px;
+    overflow: hidden;
+}
+.hint-item {
+    padding: 5px 10px;
+    cursor: pointer;
+    font-size: 12px;
+    display: flex;
+    gap: 8px;
+}
+.hint-item:hover { background: var(--log-bg); }
+.hint-cmd  { color: var(--btn-bg); font-weight: 600; min-width: 70px; }
+.hint-desc { color: var(--text-muted); }
+
+/* ── composer ── */
+#composer {
+    border-top: 1px solid var(--border);
+    padding: 8px;
+    display: flex;
+    gap: 6px;
+    align-items: flex-end;
+}
+textarea {
+    flex: 1;
+    resize: none;
+    background: var(--input-bg);
+    color: var(--text);
+    border: 1px solid var(--input-border);
+    border-radius: 6px;
+    padding: 6px 8px;
+    font-family: inherit;
+    font-size: 13px;
+    min-height: 38px;
+    max-height: 120px;
+}
+textarea:focus { outline: none; border-color: var(--vscode-focusBorder); }
+button {
+    background: var(--btn-bg);
+    color: var(--btn-text);
+    border: none;
+    border-radius: 6px;
+    padding: 6px 12px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+button:hover { background: var(--btn-hover); }
+</style>
+</head>
+
+<body>
+
+<div id="toolbar">
+    <span>Om AI Chat</span>
+    <button id="clearBtn" onclick="clearHistory()">Clear</button>
+</div>
+
+<div id="chat"></div>
+
+<div id="hints">
+    <div class="hint-item" onclick="fillSlash('/explain')">
+        <span class="hint-cmd">/explain</span>
+        <span class="hint-desc">Explain selected code</span>
+    </div>
+    <div class="hint-item" onclick="fillSlash('/fix')">
+        <span class="hint-cmd">/fix</span>
+        <span class="hint-desc">Fix selected code or describe the issue</span>
+    </div>
+    <div class="hint-item" onclick="fillSlash('/doc')">
+        <span class="hint-cmd">/doc</span>
+        <span class="hint-desc">Generate JSDoc for selected code</span>
+    </div>
+    <div class="hint-item" onclick="fillSlash('/test')">
+        <span class="hint-cmd">/test</span>
+        <span class="hint-desc">Generate unit tests for selected code</span>
+    </div>
+    <div class="hint-item" onclick="fillSlash('/commit')">
+        <span class="hint-cmd">/commit</span>
+        <span class="hint-desc">Generate commit message for staged changes</span>
+    </div>
+</div>
+
+<div id="composer">
+    <textarea id="input" rows="2" placeholder="Ask anything… or type / for commands"></textarea>
+    <button onclick="send()">Send</button>
+</div>
+
+<script>
+const vscode = acquireVsCodeApi();
+const chat   = document.getElementById('chat');
+const hints  = document.getElementById('hints');
+const input  = document.getElementById('input');
+
+// ── restore persisted history ────────────────────────────────────
+const state = vscode.getState() ?? { messages: [] };
+
+state.messages.forEach(m => renderMessage(m.text, m.role));
+
+// ── slash hints ──────────────────────────────────────────────────
+input.addEventListener('input', () => {
+    const val = input.value;
+    hints.style.display = val === '/' || val.startsWith('/') && !val.includes(' ') ? 'flex' : 'none';
+    // auto-grow
+    input.style.height = 'auto';
+    input.style.height = Math.min(input.scrollHeight, 120) + 'px';
+});
+
+input.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+});
+
+function fillSlash(cmd) {
+    input.value = cmd + ' ';
+    hints.style.display = 'none';
+    input.focus();
+}
+
+// ── send ─────────────────────────────────────────────────────────
+function send() {
+    hints.style.display = 'none';
+    const text = input.value.trim();
+    if (!text) return;
+
+    addMessage(text, 'user');
+    vscode.postMessage({ type: 'prompt', text });
+    input.value = '';
+    input.style.height = 'auto';
+}
+
+// ── clear history ─────────────────────────────────────────────────
+function clearHistory() {
+    chat.innerHTML = '';
+    vscode.setState({ messages: [] });
+}
+
+// ── render ────────────────────────────────────────────────────────
+function addMessage(text, role) {
+    renderMessage(text, role);
+    const s = vscode.getState() ?? { messages: [] };
+    s.messages.push({ text, role });
+    // cap history at 100 messages
+    if (s.messages.length > 100) s.messages.shift();
+    vscode.setState(s);
+}
+
+function renderMessage(text, role) {
+    const div = document.createElement('div');
+    div.className = 'message ' + role;
+    div.textContent = text;
+    chat.appendChild(div);
+    chat.scrollTop = chat.scrollHeight;
+}
+
+// ── receive from extension ────────────────────────────────────────
+window.addEventListener('message', event => {
+    const msg = event.data;
+    if (msg.type === 'assistant') {
+        addMessage(msg.text, 'assistant');
+    } else if (msg.type === 'log') {
+        addMessage(msg.text, 'log');
+    }
+});
+</script>
+
+</body>
+</html>
+`;
+    }
+}
+
+===== FILE: src\chat\view.html =====
+
+<!DOCTYPE html>
+<html>
+<body>
+    <h2>Om AI Chat</h2>
+    <textarea id="input" rows="6" cols="50"></textarea>
+    <br/>
+    <button onclick="send()">Send</button>
+
+    <script src="view.js"></script>
+</body>
+</html>
+
+===== FILE: src\chat\view.js =====
+
+const vscode = acquireVsCodeApi();
+
+function send() {
+    const text = document.getElementById('input').value;
+    vscode.postMessage({ text });
+}
+
+===== FILE: tsconfig.json =====
+
 {
   "compilerOptions": {
-    "module": "commonjs",
+    "module": "Node16",
+    "moduleResolution": "Node16",
     "target": "ES2020",
     "outDir": "out",
     "rootDir": "src",
-    "strict": true
-  }
+    "strict": true,
+    "sourceMap": true,
+    "types": ["node", "vscode"],
+    "lib": ["ES2020"],
+    "skipLibCheck": true
+  },
+  "include": ["src"]
 }
-```
-
----
-
-All files complete. Copy-paste ready.
