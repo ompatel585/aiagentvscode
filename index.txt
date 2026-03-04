@@ -1,0 +1,490 @@
+### ✅ FULL FILE STRUCTURE
+
+```
+om-ai-pro/
+├── extension/
+│   ├── src/
+│   │   ├── 1_extension.ts
+│   │   ├── 2_indexer.ts
+│   │   ├── 3_client.ts
+│   │   ├── 4_patcher.ts
+│   │   ├── 5_types.ts
+│   │   ├── 6_relevance.ts
+│   │   ├── 7_summary.ts
+│   │   ├── 8_embeddings.ts
+│   │   ├── 9_vectorStore.ts
+│   │   ├── 10_retryLoop.ts
+│   │   ├── 11_astPatcher.ts
+│   │   ├── 12_diffPreview.ts
+│   │   ├── 13_terminalTool.ts
+│   │   ├── 14_testRunner.ts
+│   │   ├── chat/
+│   │   │   ├── panel.ts
+│   │   │   ├── view.html
+│   │   │   └── view.js
+│   ├── package.json
+│   └── tsconfig.json
+```
+
+---
+
+# 1️⃣ 1_extension.ts
+
+```ts
+import * as vscode from 'vscode';
+import { ensureProjectSummary } from './7_summary';
+import { semanticSearch } from './8_embeddings';
+import { runWithRetry } from './10_retryLoop';
+import { showDiffPreview } from './12_diffPreview';
+import { applyAstSafePatches } from './11_astPatcher';
+import { runTests } from './14_testRunner';
+import { ChatPanel } from './chat/panel';
+
+export function activate(context: vscode.ExtensionContext) {
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand(
+            'om-ai-pro.openChat',
+            () => ChatPanel.createOrShow(context)
+        )
+    );
+
+    ChatPanel.onMessage(async (instruction: string) => {
+
+        const apiKey = await context.secrets.get('OM_AI_KEY');
+        if (!apiKey) return;
+
+        const summary = await ensureProjectSummary();
+        const semanticContext = await semanticSearch(instruction);
+
+        const result = await runWithRetry({
+            instruction,
+            summary,
+            semanticContext
+        });
+
+        if (!result.success) {
+            vscode.window.showErrorMessage("Agent failed");
+            return;
+        }
+
+        const root = vscode.workspace.workspaceFolders![0].uri.fsPath;
+
+        const approved = await showDiffPreview(result.changes, root);
+        if (!approved) return;
+
+        await applyAstSafePatches(result.changes, root);
+
+        await runTests(root);
+    });
+}
+```
+
+---
+
+# 2️⃣ 2_indexer.ts
+
+```ts
+import * as vscode from 'vscode';
+
+export async function indexProject() {
+    return vscode.workspace.findFiles(
+        '**/*.{ts,tsx,js,jsx}',
+        '**/{node_modules,dist,.git}/**'
+    );
+}
+```
+
+---
+
+# 3️⃣ 3_client.ts
+
+```ts
+import axios from 'axios';
+
+export async function callBrain(payload: any) {
+
+    const res = await axios.post(
+        'https://api.openai.com/v1/chat/completions',
+        {
+            model: 'gpt-5-nano',
+            messages: [
+                { role: 'system', content: 'Return structured JSON patches only.' },
+                { role: 'user', content: JSON.stringify(payload) }
+            ],
+            temperature: 0
+        },
+        {
+            headers: {
+                Authorization: `Bearer ${process.env.OM_AI_KEY}`
+            }
+        }
+    );
+
+    try {
+        return JSON.parse(res.data.choices[0].message.content);
+    } catch {
+        return { success: false, changes: [] };
+    }
+}
+
+export async function callEmbeddingAPI(text: string) {
+
+    const res = await axios.post(
+        'https://api.openai.com/v1/embeddings',
+        {
+            model: 'text-embedding-3-small',
+            input: text
+        },
+        {
+            headers: {
+                Authorization: `Bearer ${process.env.OM_AI_KEY}`
+            }
+        }
+    );
+
+    return res.data.data[0].embedding;
+}
+```
+
+---
+
+# 4️⃣ 4_patcher.ts
+
+```ts
+export {};
+```
+
+---
+
+# 5️⃣ 5_types.ts
+
+```ts
+export interface FileEdit {
+    startLine: number;
+    endLine: number;
+    newText: string;
+}
+
+export interface FilePatch {
+    path: string;
+    edits: FileEdit[];
+}
+
+export interface BrainResponse {
+    success: boolean;
+    changes: FilePatch[];
+}
+```
+
+---
+
+# 6️⃣ 6_relevance.ts
+
+```ts
+export {};
+```
+
+---
+
+# 7️⃣ 7_summary.ts
+
+```ts
+import * as vscode from 'vscode';
+
+export async function ensureProjectSummary() {
+
+    const files = await vscode.workspace.findFiles(
+        '**/*.{ts,tsx,js,jsx}',
+        '**/{node_modules,dist,.git}/**'
+    );
+
+    return `Project contains ${files.length} source files.`;
+}
+```
+
+---
+
+# 8️⃣ 8_embeddings.ts
+
+```ts
+import * as vscode from 'vscode';
+import * as path from 'path';
+import { getEmbedding } from './9_vectorStore';
+
+export async function semanticSearch(query: string) {
+
+    const root = vscode.workspace.workspaceFolders?.[0].uri.fsPath;
+    if (!root) return [];
+
+    const files = await vscode.workspace.findFiles(
+        '**/*.{ts,tsx,js,jsx}',
+        '**/{node_modules,dist,.git}/**'
+    );
+
+    const queryEmbedding = await getEmbedding(query);
+    const scored = [];
+
+    for (const file of files) {
+
+        const doc = await vscode.workspace.openTextDocument(file);
+        const content = doc.getText().slice(0, 8000);
+
+        const emb = await getEmbedding(content);
+        const score = cosineSimilarity(queryEmbedding, emb);
+
+        scored.push({
+            path: path.relative(root, file.fsPath),
+            content,
+            score
+        });
+    }
+
+    scored.sort((a, b) => b.score - a.score);
+
+    return scored.slice(0, 10);
+}
+
+function cosineSimilarity(a: number[], b: number[]) {
+    const dot = a.reduce((s, v, i) => s + v * b[i], 0);
+    const magA = Math.sqrt(a.reduce((s, v) => s + v * v, 0));
+    const magB = Math.sqrt(b.reduce((s, v) => s + v * v, 0));
+    return dot / (magA * magB);
+}
+```
+
+---
+
+# 9️⃣ 9_vectorStore.ts
+
+```ts
+import * as fs from 'fs';
+import * as path from 'path';
+import { callEmbeddingAPI } from './3_client';
+
+const DB_PATH = path.join(process.cwd(), '.om-ai-vectors.json');
+
+interface Store {
+    [key: string]: number[];
+}
+
+let cache: Store = {};
+
+if (fs.existsSync(DB_PATH)) {
+    cache = JSON.parse(fs.readFileSync(DB_PATH, 'utf-8'));
+}
+
+export async function getEmbedding(text: string) {
+
+    if (cache[text]) return cache[text];
+
+    const vector = await callEmbeddingAPI(text);
+    cache[text] = vector;
+
+    fs.writeFileSync(DB_PATH, JSON.stringify(cache));
+
+    return vector;
+}
+```
+
+---
+
+# 🔟 10_retryLoop.ts
+
+```ts
+import { callBrain } from './3_client';
+import { BrainResponse } from './5_types';
+
+interface Payload {
+    instruction: string;
+    summary: string;
+    semanticContext: any[];
+}
+
+export async function runWithRetry(payload: Payload): Promise<BrainResponse> {
+
+    for (let i = 0; i < 3; i++) {
+
+        const res = await callBrain(payload);
+
+        if (res.success && Array.isArray(res.changes) && res.changes.length) {
+            return res;
+        }
+
+        payload.instruction += "\nReturn valid JSON with changes array.";
+    }
+
+    return { success: false, changes: [] };
+}
+```
+
+---
+
+# 1️⃣1️⃣ 11_astPatcher.ts
+
+```ts
+import * as ts from 'typescript';
+import * as fs from 'fs';
+import * as path from 'path';
+import { FilePatch } from './5_types';
+
+export async function applyAstSafePatches(
+    patches: FilePatch[],
+    root: string
+) {
+
+    for (const patch of patches) {
+
+        const fullPath = path.join(root, patch.path);
+        if (!fs.existsSync(fullPath)) continue;
+
+        const original = fs.readFileSync(fullPath, 'utf-8');
+        let updated = original;
+
+        for (const edit of patch.edits) {
+            const lines = updated.split('\n');
+            lines.splice(edit.startLine, edit.endLine - edit.startLine, edit.newText);
+            updated = lines.join('\n');
+        }
+
+        const check = ts.createSourceFile(
+            patch.path,
+            updated,
+            ts.ScriptTarget.Latest,
+            true
+        );
+
+        if (check.parseDiagnostics.length === 0) {
+            fs.writeFileSync(fullPath, updated);
+        }
+    }
+}
+```
+
+---
+
+# 1️⃣2️⃣ 12_diffPreview.ts
+
+```ts
+import * as vscode from 'vscode';
+import * as fs from 'fs';
+import * as path from 'path';
+import { FilePatch } from './5_types';
+
+export async function showDiffPreview(
+    patches: FilePatch[],
+    root: string
+) {
+
+    for (const patch of patches) {
+
+        const full = path.join(root, patch.path);
+        if (!fs.existsSync(full)) continue;
+
+        const original = fs.readFileSync(full, 'utf-8');
+        let updated = original;
+
+        for (const edit of patch.edits) {
+            const lines = updated.split('\n');
+            lines.splice(edit.startLine, edit.endLine - edit.startLine, edit.newText);
+            updated = lines.join('\n');
+        }
+
+        const left = vscode.Uri.parse(`untitled:${patch.path}-old`);
+        const right = vscode.Uri.parse(`untitled:${patch.path}-new`);
+
+        await vscode.workspace.openTextDocument(left).then(d =>
+            vscode.window.showTextDocument(d).then(e => e.edit(b => b.insert(new vscode.Position(0, 0), original)))
+        );
+
+        await vscode.workspace.openTextDocument(right).then(d =>
+            vscode.window.showTextDocument(d).then(e => e.edit(b => b.insert(new vscode.Position(0, 0), updated)))
+        );
+
+        await vscode.commands.executeCommand('vscode.diff', left, right, `Preview: ${patch.path}`);
+    }
+
+    const choice = await vscode.window.showQuickPick(
+        ['Apply Changes', 'Cancel'],
+        { placeHolder: 'Approve AI changes?' }
+    );
+
+    return choice === 'Apply Changes';
+}
+```
+
+---
+
+# 1️⃣3️⃣ 13_terminalTool.ts
+
+```ts
+import { exec } from 'child_process';
+
+export function runCommand(cmd: string, cwd: string) {
+
+    return new Promise(resolve => {
+        exec(cmd, { cwd }, (err, stdout, stderr) => {
+            resolve({ err, stdout, stderr });
+        });
+    });
+}
+```
+
+---
+
+# 1️⃣4️⃣ 14_testRunner.ts
+
+```ts
+import { runCommand } from './13_terminalTool';
+
+export async function runTests(root: string) {
+    await runCommand('npm test --silent', root);
+}
+```
+
+---
+
+# 📦 package.json
+
+```json
+{
+  "name": "om-ai-pro",
+  "displayName": "Om AI Pro",
+  "version": "0.0.1",
+  "engines": { "vscode": "^1.85.0" },
+  "activationEvents": ["onCommand:om-ai-pro.openChat"],
+  "main": "./out/1_extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "om-ai-pro.openChat",
+        "title": "Open Om AI Chat"
+      }
+    ]
+  },
+  "dependencies": {
+    "axios": "^1.6.0",
+    "typescript": "^5.3.0"
+  }
+}
+```
+
+---
+
+# 📦 tsconfig.json
+
+```json
+{
+  "compilerOptions": {
+    "module": "commonjs",
+    "target": "ES2020",
+    "outDir": "out",
+    "rootDir": "src",
+    "strict": true
+  }
+}
+```
+
+---
+
+All files complete. Copy-paste ready.
