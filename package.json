@@ -12,30 +12,32 @@
     "*"
   ],
   "main": "./out/1_extension.js",
- "contributes": {
-  "viewsContainers": {
-    "activitybar": [
-      {
-        "id": "om-ai-sidebar",
-        "title": "Om AI",
-        "icon": "media/icon.svg"
-      }
-    ]
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "om-ai-sidebar",
+          "title": "Om AI",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "om-ai-sidebar": [
+        {
+          "id": "om-ai-chat-view",
+          "name": "Chat",
+          "type": "webview"
+        }
+      ]
+    }
   },
-  "views": {
-    "om-ai-sidebar": [
-      {
-        "id": "om-ai-chat-view",
-        "name": "Chat"
-      }
-    ]
-  }
-},
   "scripts": {
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./"
   },
   "dependencies": {
+    "@google/generative-ai": "^0.24.1",
     "axios": "^1.13.6",
     "path": "^0.12.7"
   },

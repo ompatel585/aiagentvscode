@@ -56,7 +56,7 @@ async function semanticSearch(query) {
         });
     }
     scored.sort((a, b) => b.score - a.score);
-    return scored.slice(0, 10);
+    return scored.slice(0, 3);
 }
 function cosineSimilarity(a, b) {
     const dot = a.reduce((s, v, i) => s + v * b[i], 0);

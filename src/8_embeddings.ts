@@ -32,7 +32,7 @@ export async function semanticSearch(query: string) {
 
     scored.sort((a, b) => b.score - a.score);
 
-    return scored.slice(0, 10);
+    return scored.slice(0, 3);
 }
 
 function cosineSimilarity(a: number[], b: number[]) {

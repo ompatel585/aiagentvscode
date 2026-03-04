@@ -1,40 +1,62 @@
 "use strict";
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.callBrain = callBrain;
 exports.callEmbeddingAPI = callEmbeddingAPI;
-const axios_1 = __importDefault(require("axios"));
+const generative_ai_1 = require("@google/generative-ai");
+const genAI = new generative_ai_1.GoogleGenerativeAI(process.env.GEMINI_API_KEY || "AIzaSyCsUW2S4cUL7I9NFDfKS-qPjWOTdGgQiWU");
 async function callBrain(payload) {
-    const res = await axios_1.default.post('https://api.openai.com/v1/chat/completions', {
-        model: 'gpt-5-nano',
-        messages: [
-            { role: 'system', content: 'Return structured JSON patches only.' },
-            { role: 'user', content: JSON.stringify(payload) }
-        ],
-        temperature: 0
-    }, {
-        headers: {
-            Authorization: `Bearer ${process.env.OM_AI_KEY}`
-        }
+    const model = genAI.getGenerativeModel({
+        model: "gemini-2.5-flash"
     });
-    try {
-        return JSON.parse(res.data.choices[0].message.content);
+    const prompt = `
+You are an AI coding agent.
+
+Return ONLY valid JSON in this format:
+
+{
+ "success": true,
+ "changes": [
+  {
+   "path": "relative/file/path.js",
+   "edits": [
+    {
+     "startLine": number,
+     "endLine": number,
+     "newText": "replacement code"
     }
-    catch {
-        return { success: false, changes: [] };
+   ]
+  }
+ ]
+}
+
+Rules:
+- Return JSON only
+- No explanation
+- No markdown
+- Only modify existing files
+
+Instruction:
+${JSON.stringify(payload)}
+`;
+    const result = await model.generateContent(prompt);
+    const text = result.response.text();
+    console.log("========== RAW MODEL RESPONSE ==========");
+    console.log(text);
+    console.log("========================================");
+    try {
+        return JSON.parse(text);
+    }
+    catch (err) {
+        console.log("JSON PARSE FAILED");
+        console.log(err);
+        return {
+            success: false,
+            changes: [],
+            raw: text
+        };
     }
 }
 async function callEmbeddingAPI(text) {
-    const res = await axios_1.default.post('https://api.openai.com/v1/embeddings', {
-        model: 'text-embedding-3-small',
-        input: text
-    }, {
-        headers: {
-            Authorization: `Bearer ${process.env.OM_AI_KEY}`
-        }
-    });
-    return res.data.data[0].embedding;
+    return [];
 }
 //# sourceMappingURL=3_client.js.map
