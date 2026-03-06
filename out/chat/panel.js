@@ -285,7 +285,7 @@ function renderMessage(text, role) {
     chat.scrollTop = chat.scrollHeight;
 }
 
-// ── receive from extension ────────────────────────────────────────
+// ── receive from extension ───────────────────────────────────────
 window.addEventListener('message', event => {
     const msg = event.data;
     if (msg.type === 'assistant') {
