@@ -4,7 +4,7 @@ import { BrainResponse } from './types';
 interface Payload {
     instruction: string;
     summary: string;
-    semanticContext: any[];
+    semanticContext: string | any[];
 }
 
 export async function runWithRetry(payload: Payload): Promise<BrainResponse> {

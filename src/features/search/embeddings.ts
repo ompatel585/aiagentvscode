@@ -1,7 +1,11 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-import { getEmbedding } from './vectorStore';
+import { getEmbedding, cosineSimilarity } from './vectorStore';
 
+/**
+ * @deprecated Use hybridSearch from './hybridRanker' instead for better results.
+ * This function only uses semantic similarity without graph-based ranking.
+ */
 export async function semanticSearch(query: string) {
 
     const root = vscode.workspace.workspaceFolders?.[0].uri.fsPath;
@@ -33,12 +37,5 @@ export async function semanticSearch(query: string) {
     scored.sort((a, b) => b.score - a.score);
 
     return scored.slice(0, 3);
-}
-
-function cosineSimilarity(a: number[], b: number[]) {
-    const dot = a.reduce((s, v, i) => s + v * b[i], 0);
-    const magA = Math.sqrt(a.reduce((s, v) => s + v * v, 0));
-    const magB = Math.sqrt(b.reduce((s, v) => s + v * v, 0));
-    return dot / (magA * magB);
 }
 

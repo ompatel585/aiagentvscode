@@ -1,81 +1,80 @@
-# Refactoring TODO
+# VSCode Extension - Feature Enhancement TODO
 
-## Objective
-Remove numeric prefixes from file names and organize files into logical folders.
+## Completed Features
 
-## File Mapping (Old → New)
-- `src/1_extension.ts` → `src/main/extension.ts`
-- `src/2_indexer.ts` → `src/features/indexer.ts`
-- `src/3_client.ts` → `src/core/client.ts`
-- `src/4_patcher.ts` → (empty, will be removed)
-- `src/5_types.ts` → `src/core/types.ts`
-- `src/6_relevance.ts` → `src/features/search/relevance.ts`
-- `src/7_summary.ts` → `src/features/summary.ts`
-- `src/8_embeddings.ts` → `src/features/search/embeddings.ts`
-- `src/9_vectorStore.ts` → `src/features/search/vectorStore.ts`
-- `src/10_retryLoop.ts` → `src/core/retryLoop.ts`
-- `src/11_astPatcher.ts` → `src/features/patcher/astPatcher.ts`
-- `src/12_diffPreview.ts` → `src/features/diffPreview.ts`
-- `src/13_terminalTool.ts` → `src/features/terminalTool.ts`
-- `src/14_testRunner.ts` → `src/features/testRunner.ts`
-- `src/15_slashCommands.ts` → `src/commands/slashCommands.ts`
-- `src/16_rulesLoader.ts` → `src/commands/rulesLoader.ts`
-- `src/17_statusBar.ts` → `src/ui/statusBar.ts`
-- `src/chat/panel.ts` → `src/chat/panel.ts` (no change)
-- `src/chat/view.html` → `src/chat/view.html` (no change)
+### 1. Code Graph Indexing ✅
+- **File**: `src/features/graph/codeGraph.ts`
+- **Features**:
+  - Analyzes TypeScript/JavaScript files using AST
+  - Extracts imports/exports relationships
+  - Indexes symbols (functions, classes, interfaces, types)
+  - Builds dependency graph between files
+  - Provides methods to find related files, symbols, and dependencies
+  - Caching for performance
 
-## Folder Structure
-```
-src/
-├── main/
-│   └── extension.ts
-├── core/
-│   ├── client.ts
-│   ├── retryLoop.ts
-│   └── types.ts
-├── features/
-│   ├── indexer.ts
-│   ├── summary.ts
-│   ├── diffPreview.ts
-│   ├── terminalTool.ts
-│   ├── testRunner.ts
-│   ├── patcher/
-│   │   └── astPatcher.ts
-│   └── search/
-│       ├── embeddings.ts
-│       ├── relevance.ts
-│       └── vectorStore.ts
-├── chat/
-│   ├── panel.ts
-│   └── view.html
-├── commands/
-│   ├── slashCommands.ts
-│   └── rulesLoader.ts
-└── ui/
-    └── statusBar.ts
-```
+### 2. Hybrid Ranking ✅
+- **File**: `src/features/search/hybridRanker.ts`
+- **Features**:
+  - Combines multiple ranking signals:
+    - Semantic similarity (embeddings)
+    - Graph proximity (import relationships)
+    - Symbol matching (function/class names)
+    - Recency (file modification time)
+    - File type weighting (.ts > .js)
+  - Extracts symbols from query for targeted matching
+  - Reranking by instruction keywords
+  - Token budget management
 
-## Steps
-- [x] 1. Create new folder structure
-- [x] 2. Create all new files with updated imports
-- [x] 3. Update package.json main entry point
-- [x] 4. Delete old files
-- [x] 5. Compile and verify
+### 3. Multi-pass Patch Generation ✅
+- **File**: `src/features/patcher/multiPassPatcher.ts`
+- **Features**:
+  - Pass 1-3: Validates patches with increasing depth
+  - Import resolution validation
+  - Dependency validation between files
+  - Circular dependency detection
+  - Automatic error fixing attempts
+  - Related file suggestions
 
-## Dependencies Update
-All import paths need to be updated to use new relative paths:
-- `./3_client` → `./core/client`
-- `./5_types` → `./core/types`
-- `./7_summary` → `./features/summary`
-- `./8_embeddings` → `./features/search/embeddings`
-- `./9_vectorStore` → `./features/search/vectorStore`
-- `./10_retryLoop` → `./core/retryLoop`
-- `./11_astPatcher` → `./features/patcher/astPatcher`
-- `./12_diffPreview` → `./features/diffPreview`
-- `./13_terminalTool` → `./features/terminalTool`
-- `./14_testRunner` → `./features/testRunner`
-- `./15_slashCommands` → `./commands/slashCommands`
-- `./16_rulesLoader` → `./commands/rulesLoader`
-- `./17_statusBar` → `./ui/statusBar`
-- `./chat/panel` → `./chat/panel`
+### 4. Context Compression ✅
+- **File**: `src/features/search/contextCompressor.ts`
+- **Features**:
+  - Extracts semantic chunks (functions, classes, methods)
+  - Preserves import statements
+  - Query-based prioritization
+  - Token budget management
+  - Formatted output for LLM consumption
+  - Compression ratio reporting
+
+### Integration in main/extension.ts ✅
+- Updated `runPatchFlow` to use all new features:
+  1. Builds code graph
+  2. Runs hybrid search
+  3. Compresses context
+  4. Calls AI with compressed context
+  5. Validates patches with multi-pass
+  6. Shows diff preview
+  7. Applies patches
+  8. Runs tests
+
+### New Commands
+- `om-ai.rebuildGraph`: Rebuild the code graph (clears cache)
+
+## Files Created/Modified
+
+### New Files
+- `src/features/graph/codeGraph.ts` - Code graph indexing
+- `src/features/search/hybridRanker.ts` - Hybrid ranking
+- `src/features/search/contextCompressor.ts` - Context compression
+- `src/features/patcher/multiPassPatcher.ts` - Multi-pass patch validation
+
+### Modified Files
+- `src/features/search/vectorStore.ts` - Added cosineSimilarity export
+- `src/core/retryLoop.ts` - Updated Payload type for string context
+- `src/main/extension.ts` - Integrated all new features
+
+## Performance Improvements
+- Better file relevance ranking (hybrid scoring)
+- Reduced token usage (context compression)
+- More accurate patch generation (multi-pass validation)
+- Faster subsequent searches (code graph caching)
 

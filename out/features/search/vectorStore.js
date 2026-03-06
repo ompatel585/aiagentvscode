@@ -37,6 +37,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.getEmbedding = getEmbedding;
+exports.cosineSimilarity = cosineSimilarity;
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const crypto_1 = __importDefault(require("crypto"));
@@ -57,5 +58,11 @@ async function getEmbedding(text) {
     cache[key] = vector;
     fs.writeFileSync(DB_PATH, JSON.stringify(cache));
     return vector;
+}
+function cosineSimilarity(a, b) {
+    const dot = a.reduce((s, v, i) => s + v * b[i], 0);
+    const magA = Math.sqrt(a.reduce((s, v) => s + v * v, 0));
+    const magB = Math.sqrt(b.reduce((s, v) => s + v * v, 0));
+    return dot / (magA * magB);
 }
 //# sourceMappingURL=vectorStore.js.map

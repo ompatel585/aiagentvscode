@@ -1,9 +1,12 @@
 import * as vscode from 'vscode';
 import { ensureProjectSummary } from '../features/summary';
-import { semanticSearch } from '../features/search/embeddings';
+import { hybridSearch, rerankByInstruction } from '../features/search/hybridRanker';
+import { compressFileContext, formatCompressedForLLM, compressMultipleFiles } from '../features/search/contextCompressor';
+import { buildCodeGraph, clearGraphCache } from '../features/graph/codeGraph';
 import { runWithRetry } from '../core/retryLoop';
 import { showDiffPreview } from '../features/diffPreview';
 import { applyAstSafePatches } from '../features/patcher/astPatcher';
+import { generateMultiPassPatches } from '../features/patcher/multiPassPatcher';
 import { runTests } from '../features/testRunner';
 import { ChatViewProvider } from '../chat/panel';
 import { handleSlashCommand } from '../commands/slashCommands';
@@ -38,6 +41,16 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.commands.registerCommand('om-ai.openChat', () =>
             vscode.commands.executeCommand('workbench.view.extension.om-ai-sidebar')
         )
+    );
+
+    // ── Command: rebuild code graph ──────────────────────────────
+    context.subscriptions.push(
+        vscode.commands.registerCommand('om-ai.rebuildGraph', async () => {
+            clearGraphCache();
+            provider.postLog('🔄 Code graph cache cleared. Rebuilding...');
+            await buildCodeGraph(true);
+            provider.postLog('✅ Code graph rebuilt.');
+        })
     );
 
     // ── Message handler ──────────────────────────────────────────
@@ -88,7 +101,7 @@ export function activate(context: vscode.ExtensionContext) {
     });
 }
 
-// ── Core patch pipeline ──────────────────────────────────────────
+// ── Core patch pipeline with enhanced features ─────────────────
 async function runPatchFlow(instruction: string, provider: ChatViewProvider) {
 
     const workspace = vscode.workspace.workspaceFolders?.[0];
@@ -106,26 +119,79 @@ async function runPatchFlow(instruction: string, provider: ChatViewProvider) {
         provider.postLog('📋 Project rules loaded.');
     }
 
-    provider.postLog('Building project summary…');
+    // ── Step 1: Build code graph ─────────────────────────────────
+    provider.postLog('🔍 Building code graph (analyzing imports & symbols)...');
+    const graphStart = Date.now();
+    const graph = await buildCodeGraph();
+    provider.postLog(`✅ Code graph built in ${Date.now() - graphStart}ms (${graph.nodes.size} files, ${graph.symbols.size} symbols)`);
+
+    // ── Step 2: Generate project summary ─────────────────────────
+    provider.postLog('📝 Generating project summary...');
     const summary = await ensureProjectSummary();
 
-    provider.postLog('Running semantic search…');
-    const semanticContext = await semanticSearch(instruction);
-    provider.postLog(`Relevant files: ${semanticContext.length}`);
+    // ── Step 3: Hybrid search (semantic + graph + symbol) ───────
+    provider.postLog('🔎 Running hybrid search...');
+    const searchStart = Date.now();
+    
+    const scoredFiles = await hybridSearch(instruction, instruction, {
+        maxFiles: 15,
+        maxTokens: 80000,
+        includeRelatedDepth: 2,
+        weights: {
+            semantic: 0.30,
+            graph: 0.30,
+            symbol: 0.25,
+            recency: 0.10,
+            type: 0.05
+        }
+    });
+    
+    provider.postLog(`✅ Hybrid search completed in ${Date.now() - searchStart}ms`);
+    provider.postLog(`📄 Found ${scoredFiles.length} relevant files`);
 
-    // Token estimation
-    const contextChars = semanticContext.reduce((s, f) => s + (f.content?.length ?? 0), 0);
-    const estimatedTokens = Math.round(contextChars / 4);
-    provider.postLog(`Estimated prompt tokens: ~${estimatedTokens}`);
-    provider.postLog(`Estimated input cost: $${((estimatedTokens / 1_000_000) * INPUT_COST_PER_MILLION).toFixed(6)}`);
+    // Log top files with score breakdown
+    for (let i = 0; i < Math.min(3, scoredFiles.length); i++) {
+        const file = scoredFiles[i];
+        const breakdown = file.scoreBreakdown;
+        provider.postLog(`   ${i + 1}. ${file.path} (score: ${file.score.toFixed(3)})`);
+        if (breakdown) {
+            provider.postLog(`      └─ semantic: ${breakdown.semantic.toFixed(2)}, graph: ${breakdown.graph.toFixed(2)}, symbol: ${breakdown.symbol.toFixed(2)}`);
+        }
+    }
 
-    provider.postLog('Calling AI model…');
+    // ── Step 4: Context compression ──────────────────────────────
+    provider.postLog('🗜️ Compressing context...');
+    const compressStart = Date.now();
+    
+    const filesToCompress = scoredFiles.map(f => ({
+        path: f.path,
+        content: f.content
+    }));
+    
+    const compressedFiles = await compressMultipleFiles(filesToCompress, {
+        maxTokens: 25000,
+        query: instruction,
+        includeImports: true,
+        includeRelated: true
+    });
+    
+    const compressedContext = formatCompressedForLLM(compressedFiles);
+    const totalTokens = compressedFiles.reduce((s, f) => s + f.totalTokens, 0);
+    const originalTokens = compressedFiles.reduce((s, f) => s + f.originalTokens, 0);
+    const compressionRatio = ((1 - totalTokens / originalTokens) * 100).toFixed(1);
+    
+    provider.postLog(`✅ Context compressed in ${Date.now() - compressStart}ms`);
+    provider.postLog(`   Tokens: ${totalTokens} (reduced by ${compressionRatio}%)`);
+    provider.postLog(`   Estimated input cost: $${((totalTokens / 1_000_000) * INPUT_COST_PER_MILLION).toFixed(6)}`);
+
+    // ── Step 5: Call AI model ────────────────────────────────────
+    provider.postLog('🤖 Calling AI model...');
     setState('thinking');
 
     const result = await runWithRetry({
-        instruction: instruction + projectRules,   // ← rules injected here
+        instruction: instruction + projectRules,
         summary,
-        semanticContext
+        semanticContext: compressedContext // Using compressed context now
     });
 
     if (!result) {
@@ -141,7 +207,7 @@ async function runPatchFlow(instruction: string, provider: ChatViewProvider) {
         const ct  = u.candidatesTokenCount ?? 0;
         const ic  = (pt / 1_000_000) * INPUT_COST_PER_MILLION;
         const oc  = (ct / 1_000_000) * OUTPUT_COST_PER_MILLION;
-        provider.postLog(`Tokens — prompt: ${pt}, completion: ${ct} | Cost: $${(ic + oc).toFixed(6)}`);
+        provider.postLog(`📊 Tokens — prompt: ${pt}, completion: ${ct} | Cost: $${(ic + oc).toFixed(6)}`);
     }
 
     if (!result.success) {
@@ -159,20 +225,57 @@ async function runPatchFlow(instruction: string, provider: ChatViewProvider) {
         return;
     }
 
-    provider.postLog(`Generated ${result.changes.length} patch(es). Opening diff preview…`);
+    // ── Step 6: Multi-pass patch validation ───────────────────────
+    provider.postLog('🔧 Validating patches (multi-pass)...');
+    const patchResult = await generateMultiPassPatches(
+        instruction,
+        compressedContext,
+        root,
+        result.changes,
+        {
+            maxPasses: 3,
+            validateImports: true,
+            validateDependencies: true,
+            includeRelatedFiles: true
+        }
+    );
 
-    const approved = await showDiffPreview(result.changes, root);
+    if (patchResult.diagnostics.length > 0) {
+        const errors = patchResult.diagnostics.filter(d => d.severity === 'error');
+        const warnings = patchResult.diagnostics.filter(d => d.severity === 'warning');
+        
+        if (errors.length > 0) {
+            provider.postLog(`⚠️ Patch validation found ${errors.length} error(s):`);
+            errors.slice(0, 3).forEach(e => provider.postLog(`   ❌ ${e.file}: ${e.message}`));
+        }
+        if (warnings.length > 0) {
+            provider.postLog(`   ${warnings.length} warning(s) (non-critical)`);
+        }
+    }
+
+    if (!patchResult.success) {
+        provider.postLog('❌ Patch validation failed. Proceeding with caution...');
+    } else {
+        provider.postLog('✅ Patch validation passed');
+    }
+
+    // ── Step 7: Show diff preview ────────────────────────────────
+    provider.postLog(`📝 Generated ${patchResult.changes.length} patch(es). Opening diff preview…`);
+
+    const approved = await showDiffPreview(patchResult.changes, root);
     if (!approved) {
         provider.postLog('⚠️ User cancelled patch.');
         setState('idle');
         return;
     }
 
+    // ── Step 8: Apply patches ────────────────────────────────────
     setState('patching');
-    provider.postLog('Applying patches…');
-    await applyAstSafePatches(result.changes, root);
+    provider.postLog('✏️ Applying patches...');
+    await applyAstSafePatches(patchResult.changes, root);
 
-    provider.postLog('Running tests…');
+    // ── Step 9: Run tests ────────────────────────────────────────
+    provider.postLog('🧪 Running tests...');
     await runTests(root);
 
     provider.postLog('✅ Completed successfully.');
