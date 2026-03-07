@@ -39,84 +39,348 @@ const vscode = __importStar(require("vscode"));
 const path = __importStar(require("path"));
 const vectorStore_1 = require("./vectorStore");
 const codeGraph_1 = require("../graph/codeGraph");
-const DEFAULT_WEIGHTS = {
-    semantic: 0.35,
-    graph: 0.25,
-    symbol: 0.20,
-    recency: 0.10,
-    type: 0.10
-};
+function detectQueryIntent(query) {
+    const q = query.toLowerCase();
+    // ── Determine action ────────────────────────────────────────────
+    let action = 'general';
+    if (/\b(add|create|insert|introduce|make|new)\b/.test(q))
+        action = 'add';
+    else if (/\b(update|change|modify|edit|fix|refactor|replace|rename|move|convert|instead)\b/.test(q))
+        action = 'modify';
+    else if (/\b(delete|remove|drop)\b/.test(q))
+        action = 'delete';
+    else if (/\b(explain|describe|what|why|how)\b/.test(q))
+        action = 'explain';
+    // ── Entity extraction ────────────────────────────────────────────
+    // Extract meaningful noun phrases / identifiers
+    const stopWords = new Set([
+        'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with',
+        'by', 'from', 'as', 'into', 'during', 'before', 'after', 'above', 'below', 'between',
+        'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had',
+        'do', 'does', 'did', 'will', 'would', 'should', 'could', 'may', 'might', 'must', 'can',
+        'not', 'no', 'nor', 'so', 'yet', 'both', 'either', 'neither', 'while',
+        'it', 'its', 'this', 'that', 'these', 'those', 'i', 'we', 'you', 'he', 'she', 'they',
+        'me', 'us', 'him', 'her', 'them', 'my', 'our', 'your', 'his', 'their',
+        'what', 'which', 'who', 'whom', 'whose', 'when', 'where', 'why', 'how',
+        'all', 'each', 'every', 'both', 'few', 'more', 'most', 'other', 'some', 'such',
+        'too', 'very', 'just', 'also', 'now', 'here', 'there', 'then', 'once',
+        'please', 'make', 'change', 'update', 'modify', 'edit', 'add', 'create', 'remove',
+        'instead', 'current', 'define', 'accordingly', 'want', 'need',
+    ]);
+    const entityPatterns = [
+        // CamelCase identifiers
+        /\b([A-Z][a-zA-Z0-9]{2,})\b/g,
+        // snake_case / kebab-case identifiers
+        /\b([a-z][a-z0-9]{2,}(?:[_-][a-z0-9]+)+)\b/g,
+        // Words with numeric suffix (e.g. tier3, plan4)
+        /\b([a-zA-Z]{2,}\d+)\b/g,
+    ];
+    const entities = new Set();
+    // Tokenize all meaningful words
+    q.replace(/[^\w\s]/g, ' ').split(/\s+/).forEach(w => {
+        if (w.length >= 3 && !stopWords.has(w))
+            entities.add(w);
+    });
+    // Add pattern-matched identifiers from original (case-preserved) query
+    for (const pat of entityPatterns) {
+        let m;
+        while ((m = pat.exec(query)) !== null) {
+            const word = m[1].toLowerCase();
+            if (!stopWords.has(word) && word.length >= 3)
+                entities.add(word);
+        }
+    }
+    const entityList = Array.from(entities).slice(0, 25);
+    // ── Intent type ─────────────────────────────────────────────────
+    let type = 'general';
+    const uiTerms = /\b(pricing|plan|tier|ui|component|page|view|layout|style|css|tailwind|react|html|frontend|button|modal|card|form|dashboard|sidebar|navbar|header|footer|color|theme|design|render|display|show)\b/;
+    const backendTerms = /\b(api|route|endpoint|controller|service|model|database|schema|migration|auth|middleware|server|express|handler|query|mutation)\b/;
+    const configTerms = /\b(config|setting|env|environment|package|json|tsconfig|webpack|vite|babel|eslint|prettier)\b/;
+    const dataTerms = /\b(store|state|redux|zustand|context|hook|data|fetch|axios|request|response|payload)\b/;
+    const testTerms = /\b(test|spec|jest|describe|it|expect|mock|stub|fixture)\b/;
+    if (uiTerms.test(q))
+        type = 'ui';
+    else if (backendTerms.test(q))
+        type = 'backend';
+    else if (configTerms.test(q))
+        type = 'config';
+    else if (dataTerms.test(q))
+        type = 'data';
+    else if (testTerms.test(q))
+        type = 'test';
+    // ── Target file hinting ─────────────────────────────────────────
+    const targetFiles = [];
+    const pathBoosts = [];
+    const contentPatterns = [];
+    // PRICING specific - highest priority
+    if (/\b(pricing|price|tier|plan|subscription|basic|premium|gold|business|free|pro|enterprise)\b/.test(q)) {
+        targetFiles.push('pricing', 'plans', 'subscription', 'tiers');
+        pathBoosts.push(/pricing/i, /plans?/i, /subscription/i, /tiers?/i);
+        contentPatterns.push(/pricing/i, /\btier\b/i, /\bplan\b/i, /price/i, /\$\d+/, /\/mo(nth)?/i);
+    }
+    // UI / component hints
+    if (/\b(component|page|view|layout)\b/.test(q)) {
+        pathBoosts.push(/components?\//i, /pages?\//i, /views?\//i, /layouts?\//i);
+    }
+    // Route/API hints  
+    if (/\b(route|api|endpoint)\b/.test(q)) {
+        pathBoosts.push(/routes?\//i, /api\//i, /controllers?\//i);
+    }
+    // Config hints
+    if (/\b(config|setting)\b/.test(q)) {
+        pathBoosts.push(/config/i, /settings?/i);
+        contentPatterns.push(/config/i, /settings?/i);
+    }
+    // For each entity, add content patterns
+    for (const entity of entityList.slice(0, 8)) {
+        if (entity.length >= 4) {
+            contentPatterns.push(new RegExp(`\\b${escapeRegex(entity)}\\b`, 'i'));
+        }
+    }
+    return { type, entities: entityList, action, targetFiles, pathBoosts, contentPatterns };
+}
+function escapeRegex(s) {
+    return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+// ── Keyword density scoring ───────────────────────────────────────────────────
+function scoreByKeywords(filePath, content, intent) {
+    const contentLower = content.toLowerCase();
+    const pathLower = filePath.toLowerCase();
+    let score = 0;
+    let hits = 0;
+    // Check content patterns (most important)
+    for (const pat of intent.contentPatterns) {
+        const matches = (content.match(pat) || []).length;
+        if (matches > 0) {
+            score += Math.min(0.15, matches * 0.03);
+            hits++;
+        }
+    }
+    // Check path boosts (high precision signal)
+    for (const pat of intent.pathBoosts) {
+        if (pat.test(pathLower)) {
+            score += 0.4; // Strong path match = very likely correct file
+            hits++;
+        }
+    }
+    // Check target filename hints
+    for (const target of intent.targetFiles) {
+        if (pathLower.includes(target)) {
+            score += 0.35;
+            hits++;
+        }
+    }
+    // Entity keyword matching in path
+    for (const entity of intent.entities.slice(0, 10)) {
+        if (pathLower.includes(entity)) {
+            score += 0.15;
+        }
+    }
+    return Math.min(1, score);
+}
+// ── Intent-based file type boosting ──────────────────────────────────────────
+function getIntentTypeBoost(filePath, intent) {
+    const p = filePath.toLowerCase();
+    if (intent.type === 'ui') {
+        // Prefer frontend files
+        if (/\.(tsx|jsx)$/.test(p))
+            return 1.0;
+        if (/\.ts$/.test(p) && /components?\/|pages?\/|views?\//.test(p))
+            return 0.9;
+        if (/\.(ts|js)$/.test(p))
+            return 0.6;
+        if (/tailwind|css|style/.test(p))
+            return 0.7;
+    }
+    if (intent.type === 'backend') {
+        if (/routes?\/|controllers?\/|services?\/|api\//.test(p))
+            return 1.0;
+        if (/\.(ts|js)$/.test(p))
+            return 0.8;
+    }
+    if (intent.type === 'config') {
+        if (/\.(json|js)$/.test(p) && /config/.test(p))
+            return 1.0;
+        if (/tailwind|vite|webpack|eslint|tsconfig/.test(p))
+            return 0.9;
+    }
+    if (intent.type === 'test') {
+        if (/\.(test|spec)\.(ts|js|tsx|jsx)$/.test(p))
+            return 1.0;
+    }
+    // General: prefer TypeScript
+    if (/\.tsx?$/.test(p))
+        return 0.8;
+    if (/\.jsx?$/.test(p))
+        return 0.6;
+    return 0.4;
+}
+// ── File type weights ─────────────────────────────────────────────────────────
 const FILE_TYPE_PRIORITY = {
     '.ts': 1.0,
     '.tsx': 0.95,
     '.js': 0.8,
     '.jsx': 0.75,
     '.json': 0.5,
-    '.md': 0.3
+    '.md': 0.3,
+    '.css': 0.4,
+    '.scss': 0.4,
+    '.html': 0.4,
 };
+// ── Main hybrid search ────────────────────────────────────────────────────────
 async function hybridSearch(query, instruction, options = {}) {
     const workspace = vscode.workspace.workspaceFolders?.[0];
     if (!workspace)
         return [];
     const root = workspace.uri.fsPath;
-    const maxFiles = options.maxFiles ?? 10;
-    const maxTokens = options.maxTokens ?? 60000;
+    const maxFiles = options.maxFiles ?? 15;
+    const maxTokens = options.maxTokens ?? 80000;
     const includeRelatedDepth = options.includeRelatedDepth ?? 2;
-    const weights = { ...DEFAULT_WEIGHTS, ...options.weights };
-    // Build code graph
+    const fullQuery = (query + ' ' + instruction).trim();
+    // ── Detect intent ────────────────────────────────────────────────
+    const intent = detectQueryIntent(fullQuery);
+    console.log('[HybridSearch] Intent:', intent.type, '| Action:', intent.action, '| Entities:', intent.entities.slice(0, 8).join(', '));
+    // Dynamic weights based on intent
+    const baseWeights = {
+        semantic: 0.20, // reduced - often unreliable
+        graph: 0.15,
+        symbol: 0.15,
+        recency: 0.05,
+        type: 0.05,
+        keyword: 0.25, // NEW: keyword/content matching
+        intent: 0.15, // NEW: intent-based path/type scoring
+    };
+    // Override with user weights if provided (map old format to new)
+    if (options.weights) {
+        baseWeights.semantic = options.weights.semantic ?? baseWeights.semantic;
+        baseWeights.graph = options.weights.graph ?? baseWeights.graph;
+        baseWeights.symbol = options.weights.symbol ?? baseWeights.symbol;
+        baseWeights.recency = options.weights.recency ?? baseWeights.recency;
+        baseWeights.type = options.weights.type ?? baseWeights.type;
+    }
+    // Normalize weights
+    const weightSum = Object.values(baseWeights).reduce((s, v) => s + v, 0);
+    const weights = Object.fromEntries(Object.entries(baseWeights).map(([k, v]) => [k, v / weightSum]));
+    // ── Build code graph ─────────────────────────────────────────────
     const graph = await (0, codeGraph_1.buildCodeGraph)();
-    // Extract symbols from query
-    const querySymbols = extractSymbolsFromQuery(query + ' ' + instruction);
-    // Get all files
-    const files = await vscode.workspace.findFiles('**/*.{ts,tsx,js,jsx}', '**/{node_modules,dist,.git,out}/**');
-    // Get query embedding
-    const queryEmbedding = await (0, vectorStore_1.getEmbedding)(query + ' ' + instruction);
-    // Calculate scores for all files
+    // ── Get query symbols ────────────────────────────────────────────
+    const querySymbols = extractSymbolsFromQuery(fullQuery, intent);
+    // ── Get all files (broader set: include CSS/JSON for UI tasks) ───
+    const globPattern = intent.type === 'ui'
+        ? '**/*.{ts,tsx,js,jsx,css,scss,json}'
+        : '**/*.{ts,tsx,js,jsx,json}';
+    const files = await vscode.workspace.findFiles(globPattern, '**/{node_modules,dist,.git,out,.next,build}/**');
+    // ── Get query embedding (gracefully handle failure) ───────────────
+    let queryEmbedding = [];
+    const searchQuery = buildEmbeddingQuery(fullQuery, intent);
+    console.log('[HybridSearch] Embedding query:', searchQuery);
+    try {
+        const emb = await (0, vectorStore_1.getEmbedding)(searchQuery);
+        if (emb && emb.length > 0) {
+            queryEmbedding = emb;
+            console.log('[HybridSearch] Embedding ready, dim:', emb.length);
+        }
+    }
+    catch (e) {
+        console.warn('[HybridSearch] Embedding failed, using keyword-only scoring:', e);
+    }
+    const hasEmbeddings = queryEmbedding.length > 0;
+    // ── Score all files ───────────────────────────────────────────────
     const scoredFiles = [];
     for (const file of files) {
         try {
+            const relativePath = path.relative(root, file.fsPath);
+            // Skip out/ directory (compiled output)
+            if (relativePath.startsWith('out' + path.sep) || relativePath.startsWith('out/'))
+                continue;
             const doc = await vscode.workspace.openTextDocument(file);
             const content = doc.getText();
-            const relativePath = path.relative(root, file.fsPath);
-            // 1. Semantic score
-            const contentEmbedding = await (0, vectorStore_1.getEmbedding)(content.slice(0, 8000));
-            const semanticScore = (0, vectorStore_1.cosineSimilarity)(queryEmbedding, contentEmbedding);
-            // 2. Graph proximity score
+            // ── 1. Keyword / intent score (most reliable signal) ─────
+            const keywordScore = scoreByKeywords(relativePath, content, intent);
+            const intentScore = getIntentTypeBoost(relativePath, intent);
+            // ── 2. Semantic score ────────────────────────────────────
+            let semanticScore = 0;
+            if (hasEmbeddings) {
+                // Only embed files that pass a minimum keyword threshold (saves API calls)
+                if (keywordScore > 0.02 || content.length < 20000) {
+                    try {
+                        const contentForEmbed = buildFileEmbeddingContent(relativePath, content);
+                        const contentEmb = await (0, vectorStore_1.getEmbedding)(contentForEmbed);
+                        if (contentEmb && contentEmb.length > 0) {
+                            const raw = (0, vectorStore_1.cosineSimilarity)(queryEmbedding, contentEmb);
+                            // Normalize cosine similarity from [-1,1] to [0,1]
+                            semanticScore = Math.max(0, (raw + 1) / 2);
+                        }
+                    }
+                    catch {
+                        // silently ignore individual file embedding errors
+                    }
+                }
+            }
+            // ── 3. Graph proximity score ─────────────────────────────
             let graphScore = 0;
             const node = graph.nodes.get(relativePath);
             if (node) {
-                // Direct symbol matches boost score
+                // Direct symbol matches in this file
                 const symbolMatches = querySymbols.flatMap(s => (0, codeGraph_1.findSymbol)(graph, s));
                 const directMatches = symbolMatches.filter(s => s.file === relativePath);
                 if (directMatches.length > 0) {
-                    graphScore = Math.min(1, directMatches.length * 0.2);
+                    graphScore += Math.min(0.5, directMatches.length * 0.15);
                 }
-                // Related files get a boost
+                // Files related to highly-scored files get a graph boost
                 const related = (0, codeGraph_1.findRelatedFiles)(graph, relativePath, includeRelatedDepth);
-                graphScore += Math.min(0.3, related.length * 0.05);
+                if (related.length > 0) {
+                    graphScore += Math.min(0.2, related.length * 0.03);
+                }
+                // Boost if file is imported by many others (high centrality)
+                const importedByCount = node.importedBy?.length ?? 0;
+                graphScore += Math.min(0.15, importedByCount * 0.02);
             }
-            // 3. Symbol matching score
+            // ── 4. Symbol matching score ─────────────────────────────
             let symbolScore = 0;
             if (querySymbols.length > 0 && node) {
-                const fileSymbols = node.symbols.map(s => s.name.toLowerCase());
-                const matchedSymbols = querySymbols.filter(s => fileSymbols.some(fs => fs.includes(s.toLowerCase()) || s.toLowerCase().includes(fs)));
-                symbolScore = Math.min(1, matchedSymbols.length / querySymbols.length);
+                const fileSymbolNames = node.symbols.map(s => s.name.toLowerCase());
+                let matchCount = 0;
+                for (const qs of querySymbols) {
+                    const qsl = qs.toLowerCase();
+                    if (fileSymbolNames.some(fs => fs === qsl || fs.includes(qsl) || qsl.includes(fs))) {
+                        matchCount++;
+                    }
+                }
+                symbolScore = matchCount / Math.max(1, querySymbols.length);
             }
-            // 4. Recency score (recently modified files get a boost)
-            const stats = await vscode.workspace.fs.stat(file);
-            const daysSinceModified = (Date.now() - stats.mtime) / (1000 * 60 * 60 * 24);
-            const recencyScore = Math.max(0, 1 - (daysSinceModified / 365)); // Decay over a year
-            // 5. File type score
+            else if (querySymbols.length > 0) {
+                // File not in graph - do text-based symbol search
+                const contentLower = content.toLowerCase();
+                let matchCount = 0;
+                for (const qs of querySymbols) {
+                    if (contentLower.includes(qs.toLowerCase()))
+                        matchCount++;
+                }
+                symbolScore = Math.min(0.5, matchCount / Math.max(1, querySymbols.length));
+            }
+            // ── 5. Recency score ─────────────────────────────────────
+            let recencyScore = 0.5; // default
+            try {
+                const stats = await vscode.workspace.fs.stat(file);
+                const daysSinceModified = (Date.now() - stats.mtime) / (1000 * 60 * 60 * 24);
+                recencyScore = Math.max(0, 1 - (daysSinceModified / 365));
+            }
+            catch { /* ignore */ }
+            // ── 6. File type score ───────────────────────────────────
             const ext = path.extname(file.fsPath).toLowerCase();
-            const typeScore = FILE_TYPE_PRIORITY[ext] ?? 0.5;
-            // Calculate weighted total
+            const typeScore = FILE_TYPE_PRIORITY[ext] ?? 0.3;
+            // ── Weighted total ───────────────────────────────────────
             const totalScore = (semanticScore * weights.semantic) +
                 (graphScore * weights.graph) +
                 (symbolScore * weights.symbol) +
                 (recencyScore * weights.recency) +
-                (typeScore * weights.type);
-            // Only include files with some relevance
-            if (totalScore > 0.05) {
+                (typeScore * weights.type) +
+                (keywordScore * weights.keyword) +
+                (intentScore * weights.intent);
+            // Lower threshold when semantic is off (keyword + intent carry it)
+            const threshold = hasEmbeddings ? 0.05 : 0.03;
+            if (totalScore > threshold) {
                 scoredFiles.push({
                     path: relativePath,
                     content,
@@ -126,7 +390,9 @@ async function hybridSearch(query, instruction, options = {}) {
                         graph: graphScore,
                         symbol: symbolScore,
                         recency: recencyScore,
-                        type: typeScore
+                        type: typeScore,
+                        keyword: keywordScore,
+                        intent: intentScore,
                     }
                 });
             }
@@ -135,99 +401,89 @@ async function hybridSearch(query, instruction, options = {}) {
             console.warn(`[HybridRanker] Failed to score ${file.fsPath}:`, err);
         }
     }
-    // Sort by score descending
+    // ── Sort by score descending ──────────────────────────────────────
     scoredFiles.sort((a, b) => b.score - a.score);
-    // Filter by token budget
+    console.log('[HybridSearch] Top 5 scores:', scoredFiles.slice(0, 5).map(f => `${f.path}(${f.score.toFixed(3)})`).join(', '));
+    // ── Apply token budget ────────────────────────────────────────────
     const result = [];
     let tokenCount = 0;
     for (const file of scoredFiles) {
+        if (result.length >= maxFiles)
+            break;
         const fileTokens = Math.ceil(file.content.length / 4);
-        if (tokenCount + fileTokens > maxTokens && result.length >= maxFiles) {
-            continue;
-        }
-        // Prioritize higher scored files for token budget
-        if (result.length < maxFiles) {
-            result.push(file);
-            tokenCount += fileTokens;
-        }
+        result.push(file);
+        tokenCount += fileTokens;
+        if (tokenCount > maxTokens)
+            break;
     }
     return result;
 }
-function extractSymbolsFromQuery(query) {
-    // Common patterns that indicate symbol names
-    const patterns = [
-        // calls Function: functionName(
-        /\b([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/g,
-        // Type references: TypeName
-        /\b([A-Z][a-zA-Z0-9_]*)\b/g,
-        // Variable assignments: = variableName
-        /=\s*([a-zA-Z_][a-zA-Z0-9_]*)/g,
-        // Import statements: import ... from 'module'
-        /import\s+.*?\s+from\s+['"]([^'"]+)['"]/g,
-        // export statements
-        /export\s+(?:default\s+)?(?:async\s+)?(?:function|class|const|interface|type)\s+(\w+)/g
-    ];
-    const symbols = new Set();
-    const lowerQuery = query.toLowerCase();
-    // Filter out common English words that look like symbols
-    const commonWords = new Set([
-        'function', 'class', 'interface', 'type', 'const', 'let', 'var',
-        'return', 'import', 'export', 'from', 'async', 'await', 'if', 'else',
-        'for', 'while', 'switch', 'case', 'break', 'continue', 'try', 'catch',
-        'throw', 'new', 'this', 'super', 'extends', 'implements', 'public',
-        'private', 'protected', 'static', 'readonly', 'void', 'null', 'undefined',
-        'true', 'false', 'number', 'string', 'boolean', 'any', 'unknown', 'never',
-        'the', 'a', 'an', 'and', 'or', 'but', 'not', 'is', 'are', 'was', 'were',
-        'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will',
-        'would', 'should', 'could', 'may', 'might', 'must', 'can', 'need', 'that',
-        'which', 'what', 'when', 'where', 'why', 'how', 'all', 'each', 'every',
-        'both', 'few', 'more', 'most', 'other', 'some', 'such', 'no', 'nor', 'only',
-        'own', 'same', 'so', 'than', 'too', 'very', 'just', 'also', 'now', 'here',
-        'there', 'then', 'once', 'add', 'update', 'delete', 'create', 'get', 'set',
-        'build', 'make', 'use', 'using', 'used', 'call', 'called', 'see', 'show',
-        'take', 'put', 'give', 'send', 'find', 'want', 'think', 'know', 'like', 'look'
-    ]);
-    for (const pattern of patterns) {
-        const matches = query.matchAll(pattern);
-        for (const match of matches) {
-            const symbol = match[1];
-            if (symbol &&
-                symbol.length > 2 &&
-                !commonWords.has(symbol.toLowerCase()) &&
-                !lowerQuery.includes(symbol.toLowerCase() + ' is') &&
-                !lowerQuery.includes(symbol.toLowerCase() + ' are')) {
-                symbols.add(symbol);
-            }
-        }
-    }
-    // Also check for specific terms that might be code-related
-    const codeTerms = query.match(/\b(handle|process|parse|validate|normalize|extract|build|generate|compute|calculate|resolve|load|save|cache|fetch|submit|confirm|reject|accept|deny|allow|block|enable|disable|show|hide|open|close|read|write)\b/gi);
-    if (codeTerms) {
-        codeTerms.forEach(term => symbols.add(term));
-    }
-    return Array.from(symbols).slice(0, 20); // Limit to 20 symbols
+// ── Build a focused embedding query ──────────────────────────────────────────
+function buildEmbeddingQuery(query, intent) {
+    // Start with entities (most important concepts)
+    const parts = [];
+    // Add intent type context
+    parts.push(intent.type);
+    // Add entities
+    parts.push(...intent.entities.slice(0, 8));
+    // Add target files
+    parts.push(...intent.targetFiles.slice(0, 3));
+    // Deduplicate and join
+    const unique = [...new Set(parts)].filter(p => p.length > 0);
+    return unique.join(' ');
 }
-function rerankByInstruction(files, instruction, topK = 5) {
-    // Simple reranking based on instruction keywords
+// ── Build a representative snippet of the file for embedding ─────────────────
+function buildFileEmbeddingContent(filePath, content) {
+    const MAX_CHARS = 6000;
+    // Use filename + first portion of file
+    const fileName = path.basename(filePath, path.extname(filePath));
+    const snippet = content.slice(0, MAX_CHARS - fileName.length - 10);
+    return `${fileName}\n${snippet}`;
+}
+// ── Extract query symbols ────────────────────────────────────────────────────
+function extractSymbolsFromQuery(query, intent) {
+    const symbols = new Set(intent.entities);
+    // Add CamelCase references
+    const camelPattern = /\b([A-Z][a-zA-Z0-9]{2,})\b/g;
+    let m;
+    while ((m = camelPattern.exec(query)) !== null) {
+        symbols.add(m[1]);
+    }
+    // Add explicit function call patterns: functionName(
+    const callPattern = /\b([a-zA-Z_][a-zA-Z0-9_]{2,})\s*\(/g;
+    while ((m = callPattern.exec(query)) !== null) {
+        symbols.add(m[1]);
+    }
+    return Array.from(symbols).filter(s => s.length >= 3).slice(0, 20);
+}
+// ── Rerank by instruction (post-search boost) ─────────────────────────────────
+function rerankByInstruction(files, instruction, topK = 15) {
+    const intent = detectQueryIntent(instruction);
     const instructionLower = instruction.toLowerCase();
-    const keywords = instructionLower.split(/\s+/).filter(k => k.length > 3);
+    const keywords = instructionLower
+        .replace(/[^\w\s]/g, ' ')
+        .split(/\s+/)
+        .filter(k => k.length >= 4);
     const reranked = files.map(file => {
         let boost = 0;
         const filePathLower = file.path.toLowerCase();
         const contentLower = file.content.toLowerCase();
+        // Path keyword boost
         for (const keyword of keywords) {
-            // Boost for path matches
-            if (filePathLower.includes(keyword)) {
+            if (filePathLower.includes(keyword))
                 boost += 0.3;
-            }
-            // Boost for content matches (limit to avoid over-boosting)
-            const contentMatches = (contentLower.match(new RegExp(keyword, 'g')) || []).length;
-            boost += Math.min(0.2, contentMatches * 0.02);
         }
-        return {
-            ...file,
-            score: file.score + boost
-        };
+        // Content frequency boost (capped)
+        for (const keyword of keywords.slice(0, 5)) {
+            const matches = (contentLower.match(new RegExp(escapeRegex(keyword), 'g')) || []).length;
+            boost += Math.min(0.15, matches * 0.015);
+        }
+        // Intent path boosts
+        for (const pat of intent.pathBoosts) {
+            if (pat.test(filePathLower))
+                boost += 0.4;
+        }
+        return { ...file, score: file.score + boost };
     });
     reranked.sort((a, b) => b.score - a.score);
     return reranked.slice(0, topK);

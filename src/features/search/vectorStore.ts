@@ -12,24 +12,46 @@ interface Store {
 let cache: Store = {};
 
 if (fs.existsSync(DB_PATH)) {
-    cache = JSON.parse(fs.readFileSync(DB_PATH, 'utf-8'));
+    try {
+        cache = JSON.parse(fs.readFileSync(DB_PATH, 'utf-8'));
+    } catch (e) {
+        console.warn('[VectorStore] Failed to load vector cache, starting fresh');
+        cache = {};
+    }
 }
 
 function hash(text: string) {
     return crypto.createHash('sha256').update(text).digest('hex');
 }
 
-export async function getEmbedding(text: string) {
+export async function getEmbedding(text: string): Promise<number[]> {
+    // Handle empty or invalid input
+    if (!text || typeof text !== 'string' || text.trim().length === 0) {
+        console.warn('[VectorStore] Empty text provided for embedding');
+        return [];
+    }
 
     const key = hash(text);
 
-    if (cache[key]) return cache[key];
+    // Return cached embedding if available and valid
+    if (cache[key] && Array.isArray(cache[key]) && cache[key].length > 0) {
+        return cache[key];
+    }
 
+    console.log('[VectorStore] Calling embedding API for:', text.slice(0, 50) + '...');
     const vector = await callEmbeddingAPI(text);
 
-    cache[key] = vector;
-
-    fs.writeFileSync(DB_PATH, JSON.stringify(cache));
+    // Only cache if we got a valid embedding
+    if (Array.isArray(vector) && vector.length > 0) {
+        cache[key] = vector;
+        try {
+            fs.writeFileSync(DB_PATH, JSON.stringify(cache));
+        } catch (e) {
+            console.warn('[VectorStore] Failed to save vector cache:', e);
+        }
+    } else {
+        console.error('[VectorStore] Failed to get valid embedding, not caching');
+    }
 
     return vector;
 }

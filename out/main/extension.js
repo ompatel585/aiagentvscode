@@ -36,6 +36,11 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.activate = activate;
 exports.deactivate = deactivate;
 const vscode = __importStar(require("vscode"));
+const path = __importStar(require("path"));
+const dotenv = __importStar(require("dotenv"));
+// Load .env file from extension root
+const envPath = path.resolve(__dirname, '../../.env');
+dotenv.config({ path: envPath });
 const summary_1 = require("../features/summary");
 const hybridRanker_1 = require("../features/search/hybridRanker");
 const contextCompressor_1 = require("../features/search/contextCompressor");
@@ -128,30 +133,35 @@ async function runPatchFlow(instruction, provider) {
     // ── Step 2: Generate project summary ─────────────────────────
     provider.postLog('📝 Generating project summary...');
     const summary = await (0, summary_1.ensureProjectSummary)();
-    // ── Step 3: Hybrid search (semantic + graph + symbol) ───────
+    // ── Step 3: Hybrid search (semantic + graph + symbol + keyword + intent) ─
     provider.postLog('🔎 Running hybrid search...');
     const searchStart = Date.now();
+    // Let hybridSearch auto-detect weights from intent — pass permissive options
     const scoredFiles = await (0, hybridRanker_1.hybridSearch)(instruction, instruction, {
         maxFiles: 15,
         maxTokens: 80000,
         includeRelatedDepth: 2,
+        // Weights are now dynamically computed inside hybridSearch based on intent
+        // These serve as guidance hints only
         weights: {
-            semantic: 0.30,
-            graph: 0.30,
-            symbol: 0.25,
-            recency: 0.10,
-            type: 0.05
+            semantic: 0.20,
+            graph: 0.15,
+            symbol: 0.15,
+            recency: 0.05,
+            type: 0.05,
         }
     });
     provider.postLog(`✅ Hybrid search completed in ${Date.now() - searchStart}ms`);
     provider.postLog(`📄 Found ${scoredFiles.length} relevant files`);
-    // Log top files with score breakdown
-    for (let i = 0; i < Math.min(3, scoredFiles.length); i++) {
+    // Log top files with FULL score breakdown including new signals
+    for (let i = 0; i < Math.min(5, scoredFiles.length); i++) {
         const file = scoredFiles[i];
-        const breakdown = file.scoreBreakdown;
+        const bd = file.scoreBreakdown;
         provider.postLog(`   ${i + 1}. ${file.path} (score: ${file.score.toFixed(3)})`);
-        if (breakdown) {
-            provider.postLog(`      └─ semantic: ${breakdown.semantic.toFixed(2)}, graph: ${breakdown.graph.toFixed(2)}, symbol: ${breakdown.symbol.toFixed(2)}`);
+        if (bd) {
+            const kw = bd.keyword?.toFixed(2) ?? 'n/a';
+            const it = bd.intent?.toFixed(2) ?? 'n/a';
+            provider.postLog(`      └─ semantic: ${bd.semantic.toFixed(2)}, graph: ${bd.graph.toFixed(2)}, symbol: ${bd.symbol.toFixed(2)}, keyword: ${kw}, intent: ${it}`);
         }
     }
     // ── Step 4: Context compression ──────────────────────────────
@@ -162,7 +172,7 @@ async function runPatchFlow(instruction, provider) {
         content: f.content
     }));
     const compressedFiles = await (0, contextCompressor_1.compressMultipleFiles)(filesToCompress, {
-        maxTokens: 25000,
+        maxTokens: 40000,
         query: instruction,
         includeImports: true,
         includeRelated: true
