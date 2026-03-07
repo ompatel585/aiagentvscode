@@ -37,6 +37,10 @@ exports.semanticSearch = semanticSearch;
 const vscode = __importStar(require("vscode"));
 const path = __importStar(require("path"));
 const vectorStore_1 = require("./vectorStore");
+/**
+ * @deprecated Use hybridSearch from './hybridRanker' instead for better results.
+ * This function only uses semantic similarity without graph-based ranking.
+ */
 async function semanticSearch(query) {
     const root = vscode.workspace.workspaceFolders?.[0].uri.fsPath;
     if (!root)
@@ -48,7 +52,7 @@ async function semanticSearch(query) {
         const doc = await vscode.workspace.openTextDocument(file);
         const content = doc.getText().slice(0, 8000);
         const emb = await (0, vectorStore_1.getEmbedding)(content);
-        const score = cosineSimilarity(queryEmbedding, emb);
+        const score = (0, vectorStore_1.cosineSimilarity)(queryEmbedding, emb);
         scored.push({
             path: path.relative(root, file.fsPath),
             content,
@@ -57,11 +61,5 @@ async function semanticSearch(query) {
     }
     scored.sort((a, b) => b.score - a.score);
     return scored.slice(0, 3);
-}
-function cosineSimilarity(a, b) {
-    const dot = a.reduce((s, v, i) => s + v * b[i], 0);
-    const magA = Math.sqrt(a.reduce((s, v) => s + v * v, 0));
-    const magB = Math.sqrt(b.reduce((s, v) => s + v * v, 0));
-    return dot / (magA * magB);
 }
 //# sourceMappingURL=embeddings.js.map
