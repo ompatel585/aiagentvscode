@@ -17,6 +17,8 @@ export interface CompressedFile {
     totalTokens: number;
     originalTokens: number;
     compressionRatio: number;
+    // NEW: total line count of the original file, so AI knows the full endLine for whole-file replacement
+    totalLines: number;
 }
 
 export interface CompressionOptions {
@@ -32,7 +34,7 @@ const DEFAULT_OPTIONS: Required<CompressionOptions> = {
     query: '',
     includeImports: true,
     includeRelated: true,
-    chunkThreshold: 50 // Minimum lines for a chunk to be considered
+    chunkThreshold: 50
 };
 
 export async function compressFileContext(
@@ -43,10 +45,10 @@ export async function compressFileContext(
     const opts = { ...DEFAULT_OPTIONS, ...options };
     const lines = content.split('\n');
     const originalTokens = Math.ceil(content.length / 4);
+    const totalLines = lines.length;
 
     const chunks: CompressedChunk[] = [];
 
-    // Parse the file to extract semantic chunks
     const sourceFile = ts.createSourceFile(
         filePath,
         content,
@@ -55,29 +57,23 @@ export async function compressFileContext(
         ts.ScriptKind.TSX
     );
 
-    // Extract import statements
     if (opts.includeImports) {
         const imports = extractImports(sourceFile, content);
         chunks.push(...imports);
     }
 
-    // Extract top-level definitions
     const definitions = extractDefinitions(sourceFile, content);
     chunks.push(...definitions);
 
-    // Extract method-level details for relevant classes
     const methods = extractMethods(sourceFile, content);
     chunks.push(...methods);
 
-    // If we have a query, prioritize chunks that match
     if (opts.query) {
         prioritizeByQuery(chunks, opts.query);
     }
 
-    // Sort by importance
     chunks.sort((a, b) => b.importance - a.importance);
 
-    // Fit chunks within token budget
     const selectedChunks: CompressedChunk[] = [];
     let tokenCount = 0;
 
@@ -88,7 +84,6 @@ export async function compressFileContext(
             selectedChunks.push(chunk);
             tokenCount += chunkTokens;
         } else if (chunk.type === 'import' && opts.includeImports) {
-            // Always try to include imports if space allows
             const remainingSpace = opts.maxTokens - tokenCount;
             if (remainingSpace > 100) {
                 const truncatedContent = truncateToTokens(chunk.content, remainingSpace);
@@ -100,17 +95,14 @@ export async function compressFileContext(
                 tokenCount += Math.ceil(truncatedContent.length / 4);
             }
         } else if (selectedChunks.length > 0) {
-            // Try to add more content to the last chunk
             break;
         }
     }
 
-    // If we still have space, add header/context
     if (tokenCount < opts.maxTokens && lines.length > 0) {
         const headerLines = Math.min(20, Math.floor((opts.maxTokens - tokenCount) * 4 / 2));
         const header = lines.slice(0, headerLines).join('\n');
         
-        // Check if we already have similar content
         const hasHeader = selectedChunks.some(c => c.type === 'header');
         if (header.length > 50 && !hasHeader) {
             selectedChunks.unshift({
@@ -131,7 +123,8 @@ export async function compressFileContext(
         chunks: selectedChunks,
         totalTokens,
         originalTokens,
-        compressionRatio: totalTokens / originalTokens
+        compressionRatio: totalTokens / originalTokens,
+        totalLines,
     };
 }
 
@@ -162,13 +155,10 @@ function extractDefinitions(sourceFile: ts.SourceFile, content: string): Compres
     const definitions: CompressedChunk[] = [];
 
     function visit(node: ts.Node) {
-        // Functions (top-level only)
         if (ts.isFunctionDeclaration(node) && node.name) {
             const line = sourceFile.getLineAndCharacterOfPosition(node.getStart()).line;
             const endLine = sourceFile.getLineAndCharacterOfPosition(node.getEnd()).line;
             const name = node.name.getText(sourceFile);
-
-            // Get function signature only for importance
             const signature = node.parameters.map(p => p.getText(sourceFile)).join(', ');
             
             definitions.push({
@@ -181,13 +171,11 @@ function extractDefinitions(sourceFile: ts.SourceFile, content: string): Compres
             });
         }
 
-        // Classes
         if (ts.isClassDeclaration(node) && node.name) {
             const line = sourceFile.getLineAndCharacterOfPosition(node.getStart()).line;
             const endLine = sourceFile.getLineAndCharacterOfPosition(node.getEnd()).line;
             const name = node.name.getText(sourceFile);
 
-            // Extract class signature
             let classContent = `class ${name}`;
             if (node.heritageClauses && node.heritageClauses.length > 0) {
                 classContent += ' ' + node.heritageClauses.map(h => h.getText(sourceFile)).join(' ');
@@ -204,7 +192,6 @@ function extractDefinitions(sourceFile: ts.SourceFile, content: string): Compres
             });
         }
 
-        // Interfaces
         if (ts.isInterfaceDeclaration(node) && node.name) {
             const line = sourceFile.getLineAndCharacterOfPosition(node.getStart()).line;
             const endLine = sourceFile.getLineAndCharacterOfPosition(node.getEnd()).line;
@@ -220,7 +207,6 @@ function extractDefinitions(sourceFile: ts.SourceFile, content: string): Compres
             });
         }
 
-        // Type aliases
         if (ts.isTypeAliasDeclaration(node) && node.name) {
             const line = sourceFile.getLineAndCharacterOfPosition(node.getStart()).line;
             const endLine = sourceFile.getLineAndCharacterOfPosition(node.getEnd()).line;
@@ -234,6 +220,28 @@ function extractDefinitions(sourceFile: ts.SourceFile, content: string): Compres
                 symbolName: name,
                 importance: 0.75
             });
+        }
+
+        // NEW: also capture variable declarations (const x = [...]) at top level
+        if (ts.isVariableStatement(node)) {
+            for (const decl of node.declarationList.declarations) {
+                if (ts.isIdentifier(decl.name)) {
+                    const line = sourceFile.getLineAndCharacterOfPosition(node.getStart()).line;
+                    const endLine = sourceFile.getLineAndCharacterOfPosition(node.getEnd()).line;
+                    const name = decl.name.getText(sourceFile);
+                    const keyword = node.declarationList.flags & ts.NodeFlags.Const ? 'const'
+                                  : node.declarationList.flags & ts.NodeFlags.Let  ? 'let' : 'var';
+
+                    definitions.push({
+                        content: `${keyword} ${name} = ... (lines ${line}-${endLine})`,
+                        startLine: line,
+                        endLine: endLine,
+                        type: 'type', // reuse 'type' slot — no new enum value needed
+                        symbolName: name,
+                        importance: 0.85
+                    });
+                }
+            }
         }
 
         ts.forEachChild(node, visit);
@@ -296,20 +304,36 @@ function truncateToTokens(content: string, maxTokens: number): string {
     return content.slice(0, maxChars) + '...';
 }
 
+/**
+ * Format compressed files for the LLM prompt.
+ * KEY FIX: we now annotate EVERY line with its 0-indexed line number so the AI
+ * can produce accurate startLine/endLine values without guessing.
+ * We also output the total line count so the AI can do whole-file replacement.
+ */
 export function formatCompressedForLLM(files: CompressedFile[]): string {
     const sections: string[] = [];
 
     for (const file of files) {
-        sections.push(`\n// ===== ${file.path} =====`);
+        sections.push(`\n// ===== FILE: ${file.path} (TOTAL LINES: ${file.totalLines}) =====`);
         sections.push(`// Compressed: ${file.totalTokens} tokens (was ${file.originalTokens})`);
+        sections.push(`// To replace entire file: startLine=0, endLine=${file.totalLines}`);
         sections.push('');
 
-        for (const chunk of file.chunks) {
+        // Sort chunks by startLine so the output reads top-to-bottom
+        const sorted = [...file.chunks].sort((a, b) => a.startLine - b.startLine);
+
+        for (const chunk of sorted) {
             const typeTag = chunk.symbolName 
                 ? `[${chunk.type}:${chunk.symbolName}]` 
                 : `[${chunk.type}]`;
-            sections.push(`// --- ${typeTag} (lines ${chunk.startLine}-${chunk.endLine}) ---`);
-            sections.push(chunk.content);
+            sections.push(`// --- ${typeTag} lines ${chunk.startLine}-${chunk.endLine} ---`);
+            
+            // Annotate each line with its actual 0-indexed line number
+            const chunkLines = chunk.content.split('\n');
+            for (let i = 0; i < chunkLines.length; i++) {
+                const lineNo = chunk.startLine + i;
+                sections.push(`/*L${lineNo}*/ ${chunkLines[i]}`);
+            }
             sections.push('');
         }
     }
@@ -341,4 +365,3 @@ export async function compressMultipleFiles(
 
     return compressed;
 }
-

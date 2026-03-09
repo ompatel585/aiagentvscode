@@ -21,35 +21,49 @@ async function callBrain(payload) {
     const model = getGenAI().getGenerativeModel({
         model: "gemini-2.5-flash",
         generationConfig: {
-            temperature: 0.1, // Lower temp → more deterministic/precise output
+            temperature: 0.1,
             topP: 0.9,
-            responseMimeType: "application/json", // Force JSON response
+            responseMimeType: "application/json",
         }
     });
-    const prompt = `You are an expert AI coding agent with deep knowledge of TypeScript, React, Node.js, and modern web frameworks.
+    const prompt = `You are an expert AI coding agent. Your task is to analyze a codebase and produce file edits.
 
-Your task is to analyze the provided codebase context and generate precise file edits.
+== PATCH FORMAT ==
+Each edit replaces lines [startLine, endLine) with newText (0-indexed, endLine is EXCLUSIVE).
+- To replace lines 0-10: startLine=0, endLine=10 — this deletes lines 0..9 and inserts newText
+- To insert before line 5: startLine=5, endLine=5, newText="new line\\n"
+- To delete lines 3-5: startLine=3, endLine=5, newText=""
+- Multiple edits in one file MUST be sorted by startLine DESCENDING (apply bottom-up) to avoid offset drift
 
-CRITICAL RULES:
+== CRITICAL RULES ==
 1. Return ONLY valid JSON — no markdown, no explanation, no code fences
-2. Use EXACT line numbers from the provided file content
-3. newText must be complete, valid code (not truncated)
-4. Preserve existing code style (indentation, quotes, semicolons)
-5. When modifying arrays/objects, include ALL items (existing + new)
-6. Line numbers are 0-indexed
+2. Line numbers are 0-indexed. Count them carefully from the provided file content.
+3. When replacing a variable/array/object declaration, ALWAYS include the FULL declaration:
+   - startLine must point to the line with "const"/"let"/"var" keyword
+   - endLine must point to the line AFTER the closing ";" or "};" of that declaration
+   - newText must contain the complete new declaration including keyword and semicolon
+4. When modifying a data structure that is consumed by JSX/template code, you MUST also update
+   all references to changed field names in the same patch (e.g. if you rename "cta" to "buttonText",
+   update every occurrence of plan.cta to plan.buttonText in the same file's edits)
+5. newText must be syntactically complete and valid — never truncate mid-expression
+6. Preserve existing code style (indentation, quotes, semicolons)
+7. Do NOT use line-number-based patches for large structural changes spanning >30 lines.
+   Instead, replace the entire file: startLine=0, endLine=<total line count of file>
+8. After generating patches, mentally re-read the resulting file to verify it has no
+   duplicate declarations, orphaned JSX tags, or missing return statements
 
-JSON FORMAT:
+== OUTPUT FORMAT ==
 {
   "success": true,
-  "summary": "one-line description of changes",
+  "summary": "one-line description",
   "changes": [
     {
       "path": "relative/file/path.ext",
       "edits": [
         {
           "startLine": 0,
-          "endLine": 5,
-          "newText": "complete replacement code"
+          "endLine": 10,
+          "newText": "complete replacement code here"
         }
       ]
     }
@@ -62,7 +76,7 @@ ${JSON.stringify(payload.instruction)}
 PROJECT SUMMARY:
 ${JSON.stringify(payload.summary)}
 
-RELEVANT CODE CONTEXT:
+RELEVANT CODE CONTEXT (includes line numbers as comments):
 ${typeof payload.semanticContext === 'string' ? payload.semanticContext : JSON.stringify(payload.semanticContext)}
 `;
     const result = await model.generateContent(prompt);
@@ -124,7 +138,6 @@ async function callEmbeddingAPI(text) {
             model: "text-embedding-004"
         });
         const result = await model.embedContent(text);
-        // Validate we got a valid embedding
         if (!result.embedding || !result.embedding.values || result.embedding.values.length === 0) {
             console.error("[Embedding] API returned empty embedding result");
             return [];

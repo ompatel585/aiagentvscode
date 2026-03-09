@@ -42,33 +42,27 @@ const DEFAULT_OPTIONS = {
     query: '',
     includeImports: true,
     includeRelated: true,
-    chunkThreshold: 50 // Minimum lines for a chunk to be considered
+    chunkThreshold: 50
 };
 async function compressFileContext(filePath, content, options = {}) {
     const opts = { ...DEFAULT_OPTIONS, ...options };
     const lines = content.split('\n');
     const originalTokens = Math.ceil(content.length / 4);
+    const totalLines = lines.length;
     const chunks = [];
-    // Parse the file to extract semantic chunks
     const sourceFile = ts.createSourceFile(filePath, content, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-    // Extract import statements
     if (opts.includeImports) {
         const imports = extractImports(sourceFile, content);
         chunks.push(...imports);
     }
-    // Extract top-level definitions
     const definitions = extractDefinitions(sourceFile, content);
     chunks.push(...definitions);
-    // Extract method-level details for relevant classes
     const methods = extractMethods(sourceFile, content);
     chunks.push(...methods);
-    // If we have a query, prioritize chunks that match
     if (opts.query) {
         prioritizeByQuery(chunks, opts.query);
     }
-    // Sort by importance
     chunks.sort((a, b) => b.importance - a.importance);
-    // Fit chunks within token budget
     const selectedChunks = [];
     let tokenCount = 0;
     for (const chunk of chunks) {
@@ -78,7 +72,6 @@ async function compressFileContext(filePath, content, options = {}) {
             tokenCount += chunkTokens;
         }
         else if (chunk.type === 'import' && opts.includeImports) {
-            // Always try to include imports if space allows
             const remainingSpace = opts.maxTokens - tokenCount;
             if (remainingSpace > 100) {
                 const truncatedContent = truncateToTokens(chunk.content, remainingSpace);
@@ -91,15 +84,12 @@ async function compressFileContext(filePath, content, options = {}) {
             }
         }
         else if (selectedChunks.length > 0) {
-            // Try to add more content to the last chunk
             break;
         }
     }
-    // If we still have space, add header/context
     if (tokenCount < opts.maxTokens && lines.length > 0) {
         const headerLines = Math.min(20, Math.floor((opts.maxTokens - tokenCount) * 4 / 2));
         const header = lines.slice(0, headerLines).join('\n');
-        // Check if we already have similar content
         const hasHeader = selectedChunks.some(c => c.type === 'header');
         if (header.length > 50 && !hasHeader) {
             selectedChunks.unshift({
@@ -118,7 +108,8 @@ async function compressFileContext(filePath, content, options = {}) {
         chunks: selectedChunks,
         totalTokens,
         originalTokens,
-        compressionRatio: totalTokens / originalTokens
+        compressionRatio: totalTokens / originalTokens,
+        totalLines,
     };
 }
 function extractImports(sourceFile, content) {
@@ -143,12 +134,10 @@ function extractImports(sourceFile, content) {
 function extractDefinitions(sourceFile, content) {
     const definitions = [];
     function visit(node) {
-        // Functions (top-level only)
         if (ts.isFunctionDeclaration(node) && node.name) {
             const line = sourceFile.getLineAndCharacterOfPosition(node.getStart()).line;
             const endLine = sourceFile.getLineAndCharacterOfPosition(node.getEnd()).line;
             const name = node.name.getText(sourceFile);
-            // Get function signature only for importance
             const signature = node.parameters.map(p => p.getText(sourceFile)).join(', ');
             definitions.push({
                 content: `function ${name}(${signature}) { ... }`,
@@ -159,12 +148,10 @@ function extractDefinitions(sourceFile, content) {
                 importance: 0.9
             });
         }
-        // Classes
         if (ts.isClassDeclaration(node) && node.name) {
             const line = sourceFile.getLineAndCharacterOfPosition(node.getStart()).line;
             const endLine = sourceFile.getLineAndCharacterOfPosition(node.getEnd()).line;
             const name = node.name.getText(sourceFile);
-            // Extract class signature
             let classContent = `class ${name}`;
             if (node.heritageClauses && node.heritageClauses.length > 0) {
                 classContent += ' ' + node.heritageClauses.map(h => h.getText(sourceFile)).join(' ');
@@ -179,7 +166,6 @@ function extractDefinitions(sourceFile, content) {
                 importance: 0.95
             });
         }
-        // Interfaces
         if (ts.isInterfaceDeclaration(node) && node.name) {
             const line = sourceFile.getLineAndCharacterOfPosition(node.getStart()).line;
             const endLine = sourceFile.getLineAndCharacterOfPosition(node.getEnd()).line;
@@ -193,7 +179,6 @@ function extractDefinitions(sourceFile, content) {
                 importance: 0.85
             });
         }
-        // Type aliases
         if (ts.isTypeAliasDeclaration(node) && node.name) {
             const line = sourceFile.getLineAndCharacterOfPosition(node.getStart()).line;
             const endLine = sourceFile.getLineAndCharacterOfPosition(node.getEnd()).line;
@@ -206,6 +191,26 @@ function extractDefinitions(sourceFile, content) {
                 symbolName: name,
                 importance: 0.75
             });
+        }
+        // NEW: also capture variable declarations (const x = [...]) at top level
+        if (ts.isVariableStatement(node)) {
+            for (const decl of node.declarationList.declarations) {
+                if (ts.isIdentifier(decl.name)) {
+                    const line = sourceFile.getLineAndCharacterOfPosition(node.getStart()).line;
+                    const endLine = sourceFile.getLineAndCharacterOfPosition(node.getEnd()).line;
+                    const name = decl.name.getText(sourceFile);
+                    const keyword = node.declarationList.flags & ts.NodeFlags.Const ? 'const'
+                        : node.declarationList.flags & ts.NodeFlags.Let ? 'let' : 'var';
+                    definitions.push({
+                        content: `${keyword} ${name} = ... (lines ${line}-${endLine})`,
+                        startLine: line,
+                        endLine: endLine,
+                        type: 'type', // reuse 'type' slot — no new enum value needed
+                        symbolName: name,
+                        importance: 0.85
+                    });
+                }
+            }
         }
         ts.forEachChild(node, visit);
     }
@@ -257,18 +262,32 @@ function truncateToTokens(content, maxTokens) {
         return content;
     return content.slice(0, maxChars) + '...';
 }
+/**
+ * Format compressed files for the LLM prompt.
+ * KEY FIX: we now annotate EVERY line with its 0-indexed line number so the AI
+ * can produce accurate startLine/endLine values without guessing.
+ * We also output the total line count so the AI can do whole-file replacement.
+ */
 function formatCompressedForLLM(files) {
     const sections = [];
     for (const file of files) {
-        sections.push(`\n// ===== ${file.path} =====`);
+        sections.push(`\n// ===== FILE: ${file.path} (TOTAL LINES: ${file.totalLines}) =====`);
         sections.push(`// Compressed: ${file.totalTokens} tokens (was ${file.originalTokens})`);
+        sections.push(`// To replace entire file: startLine=0, endLine=${file.totalLines}`);
         sections.push('');
-        for (const chunk of file.chunks) {
+        // Sort chunks by startLine so the output reads top-to-bottom
+        const sorted = [...file.chunks].sort((a, b) => a.startLine - b.startLine);
+        for (const chunk of sorted) {
             const typeTag = chunk.symbolName
                 ? `[${chunk.type}:${chunk.symbolName}]`
                 : `[${chunk.type}]`;
-            sections.push(`// --- ${typeTag} (lines ${chunk.startLine}-${chunk.endLine}) ---`);
-            sections.push(chunk.content);
+            sections.push(`// --- ${typeTag} lines ${chunk.startLine}-${chunk.endLine} ---`);
+            // Annotate each line with its actual 0-indexed line number
+            const chunkLines = chunk.content.split('\n');
+            for (let i = 0; i < chunkLines.length; i++) {
+                const lineNo = chunk.startLine + i;
+                sections.push(`/*L${lineNo}*/ ${chunkLines[i]}`);
+            }
             sections.push('');
         }
     }

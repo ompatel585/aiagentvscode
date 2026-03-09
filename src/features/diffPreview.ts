@@ -61,277 +61,362 @@ function generateSideBySideDiff(patches: FilePatch[], root: string): string {
         }
 
         const updated = applyVirtualPatch(original, patch)
-
-        const { left, right, additions, deletions } =
-            generateSideBySideHtml(original.split('\n'), updated.split('\n'))
+        const { rows, additions, deletions } = buildSideBySideRows(original.split('\n'), updated.split('\n'))
 
         totalAdditions += additions
         totalDeletions += deletions
 
+        // Render rows into two separate column HTML strings
+        let leftHtml  = ''
+        let rightHtml = ''
+
+        for (const row of rows) {
+            // LEFT column
+            if (row.left) {
+                const cls = row.left.type === 'del' ? 'removed' : ''
+                leftHtml += `<div class="line ${cls}">` +
+                    `<span class="line-num">${row.left.no}</span>` +
+                    `<span class="line-code">${escapeHtml(row.left.text)}</span>` +
+                    `</div>`
+            } else {
+                leftHtml += `<div class="line empty"><span class="line-num"></span><span class="line-code"></span></div>`
+            }
+
+            // RIGHT column
+            if (row.right) {
+                const cls = row.right.type === 'add' ? 'added' : ''
+                rightHtml += `<div class="line ${cls}">` +
+                    `<span class="line-num">${row.right.no}</span>` +
+                    `<span class="line-code">${escapeHtml(row.right.text)}</span>` +
+                    `</div>`
+            } else {
+                rightHtml += `<div class="line empty"><span class="line-num"></span><span class="line-code"></span></div>`
+            }
+        }
+
         diffContent += `
         <div class="diff-file">
             <div class="file-header">
-                <div class="file-info">
-                    <span class="file-path">${patch.path}</span>
-                    <span class="file-stats">
-                        <span class="stat-add">+${additions}</span>
-                        <span class="stat-del">-${deletions}</span>
-                    </span>
+                <span class="file-path" onclick="openFile('${escapeHtml(fullPath)}')" title="Click to open file">${patch.path}</span>
+                <span class="file-stats">
+                    <span class="stat-add">+${additions}</span>
+                    <span class="stat-del">-${deletions}</span>
+                </span>
+            </div>
+            <div class="diff-columns">
+                <div class="diff-col">
+                    <div class="col-header">Original <span class="col-path">a/${patch.path}</span></div>
+                    <div class="col-body">${leftHtml}</div>
+                </div>
+                <div class="col-divider"></div>
+                <div class="diff-col">
+                    <div class="col-header">Modified <span class="col-path">b/${patch.path}</span></div>
+                    <div class="col-body">${rightHtml}</div>
                 </div>
             </div>
-
-            <div class="diff-container">
-                <div class="diff-side old">
-                    <div class="side-header">
-                        <span class="side-label">Old Version</span>
-                        <span class="side-path">a/${patch.path}</span>
-                    </div>
-                    <div class="side-content">${left}</div>
-                </div>
-
-                <div class="diff-side new">
-                    <div class="side-header">
-                        <span class="side-label">New Version</span>
-                        <span class="side-path">b/${patch.path}</span>
-                    </div>
-                    <div class="side-content">${right}</div>
-                </div>
-            </div>
-        </div>
-        `
+        </div>`
     }
 
-    return `
-<!DOCTYPE html>
+    return `<!DOCTYPE html>
 <html>
 <head>
 <meta charset="UTF-8">
-
 <style>
-
-:root{
---bg:#0d1117;
---header-bg:#161b22;
---border:#30363d;
---text:#c9d1d9;
---add:#3fb950;
---del:#f85149;
+:root {
+    --bg:         #0d1117;
+    --header-bg:  #161b22;
+    --border:     #30363d;
+    --text:       #c9d1d9;
+    --muted:      #6e7681;
+    --add-bg:     rgba(46,160,67,.18);
+    --add-text:   #3fb950;
+    --del-bg:     rgba(248,81,73,.18);
+    --del-text:   #f85149;
+    --empty-bg:   rgba(255,255,255,.02);
 }
 
-body{
-margin:0;
-font-family:Segoe UI, sans-serif;
-background:var(--bg);
-color:var(--text);
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+    margin: 0;
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
 }
 
-.toolbar{
-display:flex;
-justify-content:space-between;
-padding:12px 20px;
-background:var(--header-bg);
-border-bottom:1px solid var(--border);
+/* ── toolbar ── */
+.toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 16px;
+    background: var(--header-bg);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+    gap: 12px;
+}
+.toolbar-left { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+.toolbar-right { display: flex; gap: 8px; }
+
+.badge { font-size: 12px; padding: 2px 8px; border-radius: 12px; font-weight: 600; }
+.badge-add { background: rgba(46,160,67,.2); color: var(--add-text); }
+.badge-del { background: rgba(248,81,73,.2); color: var(--del-text); }
+
+button {
+    padding: 6px 16px;
+    border-radius: 6px;
+    border: none;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 500;
+}
+.btn-apply  { background: #238636; color: #fff; }
+.btn-apply:hover { background: #2ea043; }
+.btn-cancel { background: #30363d; color: var(--text); }
+.btn-cancel:hover { background: #3d444d; }
+
+/* ── scroll area ── */
+.scroll-area {
+    flex: 1;
+    overflow-y: auto;
+    overflow-x: hidden;
 }
 
-button{
-padding:6px 14px;
-border-radius:6px;
-border:none;
-cursor:pointer;
+/* ── per-file diff ── */
+.diff-file { border-bottom: 2px solid var(--border); }
+
+.file-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 14px;
+    background: var(--header-bg);
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+}
+.file-path {
+    font-family: monospace;
+    color: #58a6ff;
+    cursor: pointer;
+}
+.file-path:hover { text-decoration: underline; }
+.file-stats { display: flex; gap: 8px; }
+.stat-add { color: var(--add-text); font-weight: 600; }
+.stat-del { color: var(--del-text); font-weight: 600; }
+
+/* ── two columns ── */
+.diff-columns {
+    display: flex;
+    width: 100%;
+    overflow-x: auto;          /* horizontal scroll if lines are long */
 }
 
-.apply{background:#238636;color:white}
-.cancel{background:#30363d;color:white}
-
-.diff-scroll{
-height:calc(100vh - 55px);
-overflow:auto;
+.diff-col {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
 }
 
-.diff-container{
-display:flex;
+.col-divider {
+    width: 1px;
+    background: var(--border);
+    flex-shrink: 0;
 }
 
-.diff-side{
-width:50%;
-border-right:1px solid var(--border);
-font-family:monospace;
-font-size:12px;
+.col-header {
+    padding: 5px 10px;
+    background: var(--header-bg);
+    border-bottom: 1px solid var(--border);
+    font-size: 11px;
+    color: var(--muted);
+    white-space: nowrap;
 }
+.col-path { font-family: monospace; margin-left: 6px; color: var(--muted); }
 
-.diff-side:last-child{
-border-right:none;
+/* ── diff lines ── */
+.col-body { overflow-x: auto; }    /* each column scrolls independently */
+
+.line {
+    display: flex;
+    align-items: stretch;
+    min-height: 20px;
+    font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+    font-size: 12px;
+    line-height: 20px;
 }
+.line.added   { background: var(--add-bg); }
+.line.removed { background: var(--del-bg); }
+.line.empty   { background: var(--empty-bg); }
 
-.line{
-display:flex;
+.line-num {
+    width: 52px;
+    min-width: 52px;
+    text-align: right;
+    padding: 0 8px 0 4px;
+    color: var(--muted);
+    background: rgba(0,0,0,.2);
+    user-select: none;
+    border-right: 1px solid var(--border);
+    font-size: 11px;
 }
-
-.line-num{
-width:50px;
-text-align:right;
-padding-right:8px;
-color:#6e7681;
-background:#161b22;
+.line-code {
+    flex: 1;
+    padding: 0 10px;
+    white-space: pre;          /* no wrapping — horizontal scroll handles long lines */
+    overflow: visible;
 }
-
-.line-code{
-flex:1;
-padding-left:10px;
-white-space:pre;
-}
-
-.added{background:rgba(46,160,67,.15)}
-.removed{background:rgba(248,81,73,.15)}
-
 </style>
 </head>
-
 <body>
 
 <div class="toolbar">
-<div>
-${patches.length} file(s) • 
-<span style="color:var(--add)">+${totalAdditions}</span> 
-<span style="color:var(--del)">-${totalDeletions}</span>
+    <div class="toolbar-left">
+        <strong>${patches.length} file(s) changed</strong>
+        <span class="badge badge-add">+${totalAdditions}</span>
+        <span class="badge badge-del">-${totalDeletions}</span>
+    </div>
+    <div class="toolbar-right">
+        <button class="btn-cancel" onclick="cancel()">Reject</button>
+        <button class="btn-apply"  onclick="apply()">Apply Patch</button>
+    </div>
 </div>
 
-<div>
-<button class="cancel" onclick="cancel()">Cancel</button>
-<button class="apply" onclick="apply()">Accept</button>
-</div>
-</div>
-
-<div class="diff-scroll">
+<div class="scroll-area">
 ${diffContent}
 </div>
 
 <script>
-
-const vscode = acquireVsCodeApi()
-
-function apply(){
-vscode.postMessage({type:'apply'})
-}
-
-function cancel(){
-vscode.postMessage({type:'cancel'})
-}
-
+const vscode = acquireVsCodeApi();
+function apply()    { vscode.postMessage({ type: 'apply' }); }
+function cancel()   { vscode.postMessage({ type: 'cancel' }); }
+function openFile(p){ vscode.postMessage({ type: 'openFile', path: p }); }
 </script>
-
 </body>
-</html>
-`
+</html>`
 }
 
-function generateSideBySideHtml(oldLines: string[], newLines: string[]) {
+// ── LCS-based diff (Myers algorithm approximation) ──────────────────────────
 
-    const diff = computeDiff(oldLines, newLines)
+interface DiffItem {
+    type: 'same' | 'add' | 'del'
+    value: string
+}
 
-    let left = ''
-    let right = ''
+interface SideBySideRow {
+    left:  { no: number; text: string; type: 'same' | 'del' } | null
+    right: { no: number; text: string; type: 'same' | 'add' } | null
+}
 
-    let additions = 0
-    let deletions = 0
+function computeLcsDiff(a: string[], b: string[]): DiffItem[] {
+    const m = a.length, n = b.length
 
-    let oldLine = 1
-    let newLine = 1
+    // Build LCS table
+    const dp: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0))
+    for (let i = 1; i <= m; i++) {
+        for (let j = 1; j <= n; j++) {
+            dp[i][j] = a[i-1] === b[j-1]
+                ? dp[i-1][j-1] + 1
+                : Math.max(dp[i-1][j], dp[i][j-1])
+        }
+    }
 
-    for (const item of diff) {
+    // Backtrack
+    const result: DiffItem[] = []
+    let i = m, j = n
+    while (i > 0 || j > 0) {
+        if (i > 0 && j > 0 && a[i-1] === b[j-1]) {
+            result.unshift({ type: 'same', value: a[i-1] })
+            i--; j--
+        } else if (j > 0 && (i === 0 || dp[i][j-1] >= dp[i-1][j])) {
+            result.unshift({ type: 'add', value: b[j-1] })
+            j--
+        } else {
+            result.unshift({ type: 'del', value: a[i-1] })
+            i--
+        }
+    }
+    return result
+}
+
+function buildSideBySideRows(
+    oldLines: string[],
+    newLines: string[]
+): { rows: SideBySideRow[]; additions: number; deletions: number } {
+
+    const diff = computeLcsDiff(oldLines, newLines)
+    const rows: SideBySideRow[] = []
+    let additions = 0, deletions = 0
+    let oldNo = 1, newNo = 1
+
+    let di = 0
+    while (di < diff.length) {
+        const item = diff[di]
 
         if (item.type === 'same') {
-            left += createLine(oldLine++, item.value)
-            right += createLine(newLine++, item.value)
-        }
-
-        if (item.type === 'del') {
-            left += createLine(oldLine++, item.value, 'removed')
-            right += createLine('', '')
-            deletions++
-        }
-
-        if (item.type === 'add') {
-            left += createLine('', '')
-            right += createLine(newLine++, item.value, 'added')
-            additions++
-        }
-    }
-
-    return { left, right, additions, deletions }
-}
-
-function computeDiff(a: string[], b: string[]) {
-
-    const res:any[]=[]
-    let i=0
-    let j=0
-
-    while(i<a.length || j<b.length){
-
-        if(i>=a.length){
-            res.push({type:'add',value:b[j++]})
-        }
-        else if(j>=b.length){
-            res.push({type:'del',value:a[i++]})
-        }
-        else if(a[i]===b[j]){
-            res.push({type:'same',value:a[i]})
-            i++;j++
-        }
-        else{
-            res.push({type:'del',value:a[i++]})
-            res.push({type:'add',value:b[j++]})
+            rows.push({
+                left:  { no: oldNo++, text: item.value, type: 'same' },
+                right: { no: newNo++, text: item.value, type: 'same' }
+            })
+            di++
+        } else if (item.type === 'del' && diff[di+1]?.type === 'add') {
+            // Paired replace — show side-by-side on same row
+            rows.push({
+                left:  { no: oldNo++, text: item.value,       type: 'del' },
+                right: { no: newNo++, text: diff[di+1].value, type: 'add' }
+            })
+            deletions++; additions++
+            di += 2
+        } else if (item.type === 'del') {
+            rows.push({ left: { no: oldNo++, text: item.value, type: 'del' }, right: null })
+            deletions++; di++
+        } else { // add
+            rows.push({ left: null, right: { no: newNo++, text: item.value, type: 'add' } })
+            additions++; di++
         }
     }
 
-    return res
+    return { rows, additions, deletions }
 }
 
-function createLine(num:any,text:string,type=''){
-
-return `<div class="line ${type}">
-<span class="line-num">${num||''}</span>
-<span class="line-code">${escapeHtml(text)}</span>
-</div>`
+function escapeHtml(t: string): string {
+    return t
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;')
 }
 
-function escapeHtml(t:string){
-return t
-.replace(/&/g,'&amp;')
-.replace(/</g,'&lt;')
-.replace(/>/g,'&gt;')
-.replace(/"/g,'&quot;')
-.replace(/'/g,'&#039;')
+// ── Virtual patch application (bottom-up) ───────────────────────────────────
+
+function applyVirtualPatch(original: string, patch: FilePatch): string {
+    let lines = original.split('\n')
+
+    // Apply edits bottom-up to avoid offset drift
+    const edits = [...patch.edits].sort((a, b) => b.startLine - a.startLine)
+
+    for (const e of edits) {
+        const start = Math.max(0, e.startLine)
+        const end   = Math.min(lines.length, e.endLine)
+        const newLines = e.newText === '' ? [] : e.newText.split('\n')
+        lines.splice(start, end - start, ...newLines)
+    }
+
+    return lines.join('\n')
 }
 
-function applyVirtualPatch(original:string,patch:FilePatch){
+// ── Direct patch apply (write to disk) ──────────────────────────────────────
 
-let lines=original.split('\n')
-
-const edits=[...patch.edits].sort((a,b)=>b.startLine-a.startLine)
-
-for(const e of edits){
-const repl=e.newText.split('\n')
-lines.splice(e.startLine,e.endLine-e.startLine,...repl)
-}
-
-return lines.join('\n')
-}
-
-async function applyPatches(patches:FilePatch[],root:string){
-
-for(const patch of patches){
-
-const full=path.join(root,patch.path)
-
-if(!fs.existsSync(full)) continue
-
-const original=fs.readFileSync(full,'utf8')
-const updated=applyVirtualPatch(original,patch)
-
-fs.writeFileSync(full,updated,'utf8')
-
-}
-
+async function applyPatches(patches: FilePatch[], root: string) {
+    for (const patch of patches) {
+        const full = path.join(root, patch.path)
+        if (!fs.existsSync(full)) continue
+        const original = fs.readFileSync(full, 'utf8')
+        const updated  = applyVirtualPatch(original, patch)
+        fs.writeFileSync(full, updated, 'utf8')
+    }
 }
