@@ -374,11 +374,16 @@ export async function hybridSearch(
                             const raw = cosineSimilarity(queryEmbedding, contentEmb);
                             // Normalize cosine similarity from [-1,1] to [0,1]
                             semanticScore = Math.max(0, (raw + 1) / 2);
+                            console.log(`[HybridSearch] Semantic score for ${relativePath}: ${semanticScore.toFixed(3)} (raw: ${raw.toFixed(3)})`);
+                        } else {
+                            console.log(`[HybridSearch] No embedding for file: ${relativePath}`);
                         }
-                    } catch {
-                        // silently ignore individual file embedding errors
+                    } catch (e) {
+                        console.log(`[HybridSearch] Embedding error for ${relativePath}:`, e);
                     }
                 }
+            } else {
+                console.log('[HybridSearch] No query embeddings available, skipping semantic scoring');
             }
 
             // ── 3. Graph proximity score ─────────────────────────────

@@ -119,19 +119,22 @@ function parseModelResponse(text) {
 ============================== */
 async function callEmbeddingAPI(text) {
     try {
+        console.log('[Embedding] Calling API with text:', text.slice(0, 100));
         const model = getGenAI().getGenerativeModel({
             model: "text-embedding-004"
         });
         const result = await model.embedContent(text);
         // Validate we got a valid embedding
         if (!result.embedding || !result.embedding.values || result.embedding.values.length === 0) {
-            console.error("Embedding API returned empty result");
+            console.error("[Embedding] API returned empty embedding result");
             return [];
         }
+        console.log('[Embedding] Got embedding with', result.embedding.values.length, 'dimensions');
         return result.embedding.values;
     }
     catch (err) {
-        console.error("Embedding error:", err);
+        console.error("[Embedding] API error:", err?.message || err);
+        console.error("[Embedding] Full error:", err);
         return [];
     }
 }
