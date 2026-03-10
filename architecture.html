@@ -1,0 +1,1032 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Om AI Agent — Architecture</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:ital,wght@0,300;0,400;0,500;1,400&family=Clash+Display:wght@400;500;600;700&family=Instrument+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet"/>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --ink:#0a0a0f;
+  --paper:#f4f1eb;
+  --paper2:#ece8df;
+  --paper3:#e3ddd1;
+  --gold:#c9a84c;
+  --gold2:#f0c040;
+  --rust:#c94a2a;
+  --teal:#1a7a6e;
+  --teal2:#25b09e;
+  --blue:#1e4fd8;
+  --purple:#6b2fa0;
+  --ink2:#1a1a24;
+  --ink3:#21212d;
+  --muted:#7a7468;
+  --mono:'DM Mono',monospace;
+  --display:'Clash Display','Instrument Sans',sans-serif;
+  --body:'Instrument Sans',sans-serif;
+}
+html{scroll-behavior:smooth}
+body{
+  background:var(--ink);
+  color:var(--paper);
+  font-family:var(--body);
+  overflow-x:hidden;
+  cursor:none;
+}
+#cursor{
+  position:fixed;width:10px;height:10px;
+  background:var(--gold);border-radius:50%;
+  pointer-events:none;z-index:9999;
+  transform:translate(-50%,-50%);
+  transition:width .2s,height .2s;
+  mix-blend-mode:difference;
+}
+#cursor-ring{
+  position:fixed;width:36px;height:36px;
+  border:1px solid rgba(201,168,76,.4);border-radius:50%;
+  pointer-events:none;z-index:9998;
+  transform:translate(-50%,-50%);
+  transition:width .3s,height .3s;
+}
+
+/* NAV */
+#nav{
+  position:fixed;top:0;left:0;right:0;z-index:100;
+  padding:16px 7vw;
+  display:flex;justify-content:space-between;align-items:center;
+  transition:background .3s,backdrop-filter .3s;
+}
+#nav.scrolled{
+  background:rgba(10,10,15,.88);
+  backdrop-filter:blur(18px);
+  border-bottom:1px solid rgba(244,241,235,.06);
+}
+.nav-brand{
+  font-family:var(--display);font-size:.95rem;font-weight:600;
+  letter-spacing:-.01em;display:flex;align-items:center;gap:10px;
+}
+.nav-dot{
+  width:8px;height:8px;border-radius:50%;background:var(--gold);
+  animation:pulse 2.5s infinite;
+}
+@keyframes pulse{
+  0%,100%{box-shadow:0 0 0 0 rgba(201,168,76,.4)}
+  50%{box-shadow:0 0 0 6px rgba(201,168,76,0)}
+}
+.nav-links{display:flex;gap:28px}
+.nav-link{
+  font-family:var(--mono);font-size:10px;letter-spacing:.1em;
+  text-transform:uppercase;color:rgba(244,241,235,.35);
+  text-decoration:none;transition:color .2s;cursor:pointer;border:none;background:none;
+}
+.nav-link:hover,.nav-link.active{color:var(--gold)}
+
+/* HERO */
+#hero{
+  min-height:100vh;display:flex;flex-direction:column;
+  justify-content:center;padding:80px 7vw;
+  position:relative;overflow:hidden;
+}
+.hero-bg{
+  position:absolute;inset:0;
+  background:
+    radial-gradient(ellipse 60% 70% at 75% 40%,rgba(201,168,76,.06) 0%,transparent 60%),
+    radial-gradient(ellipse 40% 50% at 20% 70%,rgba(26,122,110,.05) 0%,transparent 55%),
+    radial-gradient(ellipse 30% 40% at 60% 90%,rgba(30,79,216,.04) 0%,transparent 50%);
+}
+.hero-grain{
+  position:absolute;inset:0;
+  background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E");
+  opacity:.5;pointer-events:none;
+}
+.hero-watermark{
+  position:absolute;right:-3vw;top:50%;transform:translateY(-50%);
+  font-family:var(--display);font-size:24vw;font-weight:700;
+  color:rgba(244,241,235,.018);letter-spacing:-.05em;
+  user-select:none;pointer-events:none;line-height:1;white-space:nowrap;
+}
+.hero-eyebrow{
+  font-family:var(--mono);font-size:11px;letter-spacing:.18em;
+  color:var(--gold);text-transform:uppercase;
+  margin-bottom:28px;display:flex;align-items:center;gap:12px;
+  opacity:0;animation:riseIn .8s .1s forwards;
+}
+.hero-eyebrow::before{content:'';width:28px;height:1px;background:var(--gold);flex-shrink:0}
+h1.hero-title{
+  font-family:var(--display);
+  font-size:clamp(3.5rem,8vw,8rem);
+  font-weight:700;line-height:.95;letter-spacing:-.03em;
+  opacity:0;animation:riseIn .9s .25s forwards;
+}
+h1.hero-title em{font-style:normal;color:var(--gold);font-weight:400}
+.hero-sub{
+  margin-top:32px;font-size:clamp(1rem,1.6vw,1.2rem);
+  color:rgba(244,241,235,.5);max-width:500px;line-height:1.65;
+  opacity:0;animation:riseIn .9s .4s forwards;
+}
+.hero-pills{
+  display:flex;gap:8px;flex-wrap:wrap;margin-top:36px;
+  opacity:0;animation:riseIn .9s .55s forwards;
+}
+.pill{
+  padding:5px 14px;border-radius:100px;
+  font-family:var(--mono);font-size:10px;letter-spacing:.08em;
+  border:1px solid rgba(244,241,235,.1);
+  color:rgba(244,241,235,.4);background:rgba(244,241,235,.03);
+  text-transform:uppercase;
+}
+.hero-scroll{
+  position:absolute;bottom:40px;left:7vw;
+  display:flex;align-items:center;gap:12px;
+  font-family:var(--mono);font-size:10px;letter-spacing:.12em;
+  color:rgba(244,241,235,.25);
+  opacity:0;animation:riseIn 1s 1s forwards;
+}
+.hero-scroll-line{
+  width:36px;height:1px;
+  background:linear-gradient(90deg,rgba(244,241,235,.25),transparent);
+  animation:scanline 2s infinite;
+}
+@keyframes scanline{
+  0%,100%{transform:scaleX(1);opacity:.25}
+  50%{transform:scaleX(.5);opacity:.5}
+}
+@keyframes riseIn{
+  from{opacity:0;transform:translateY(20px)}
+  to{opacity:1;transform:translateY(0)}
+}
+
+/* SECTIONS */
+section{padding:110px 7vw;position:relative}
+.section-label{
+  font-family:var(--mono);font-size:10px;letter-spacing:.2em;
+  text-transform:uppercase;color:var(--gold);
+  margin-bottom:14px;display:flex;align-items:center;gap:10px;
+}
+.section-label span{color:rgba(244,241,235,.2)}
+h2.section-title{
+  font-family:var(--display);font-size:clamp(2rem,4vw,3.4rem);
+  font-weight:600;letter-spacing:-.02em;line-height:1.1;margin-bottom:60px;
+}
+.reveal{opacity:0;transform:translateY(22px);transition:opacity .7s,transform .7s}
+.reveal.visible{opacity:1;transform:translateY(0)}
+
+/* PIPELINE */
+#pipeline{background:var(--ink2)}
+.pipeline-track{
+  display:grid;grid-template-columns:repeat(8,1fr);
+  position:relative;margin-bottom:48px;
+}
+.pipe-track-line{
+  position:absolute;top:36px;left:6%;right:6%;
+  height:1px;
+  background:linear-gradient(90deg,transparent,rgba(201,168,76,.2) 15%,rgba(201,168,76,.2) 85%,transparent);
+  pointer-events:none;
+}
+.pipe-step{
+  display:flex;flex-direction:column;align-items:center;
+  gap:14px;padding:20px 6px;cursor:pointer;
+  position:relative;
+}
+.pipe-icon{
+  width:52px;height:52px;border-radius:14px;
+  display:flex;align-items:center;justify-content:center;
+  font-size:20px;border:1px solid rgba(244,241,235,.08);
+  background:var(--ink3);position:relative;z-index:1;
+  transition:all .3s;flex-shrink:0;
+}
+.pipe-step:hover .pipe-icon,
+.pipe-step.active .pipe-icon{
+  border-color:var(--gold);background:rgba(201,168,76,.1);
+  transform:translateY(-4px);box-shadow:0 10px 28px rgba(201,168,76,.18);
+}
+.pipe-num{
+  position:absolute;top:16px;left:50%;transform:translateX(14px);
+  width:15px;height:15px;border-radius:50%;
+  background:var(--ink2);border:1px solid rgba(244,241,235,.1);
+  font-family:var(--mono);font-size:7px;
+  display:flex;align-items:center;justify-content:center;
+  color:rgba(244,241,235,.2);z-index:2;
+}
+.pipe-label{
+  font-family:var(--mono);font-size:9px;letter-spacing:.07em;
+  color:rgba(244,241,235,.3);text-align:center;
+  transition:color .3s;text-transform:uppercase;line-height:1.4;
+}
+.pipe-step:hover .pipe-label,.pipe-step.active .pipe-label{color:var(--gold)}
+
+.pipeline-detail{
+  background:var(--ink3);border:1px solid rgba(244,241,235,.07);
+  border-radius:16px;padding:36px;
+  display:none;
+}
+.pipeline-detail.visible{
+  display:grid;grid-template-columns:1fr 1fr;gap:36px;
+  animation:fadeUp .3s ease;
+}
+@keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+.detail-title{font-family:var(--display);font-size:1.35rem;font-weight:600;margin-bottom:6px;letter-spacing:-.01em}
+.detail-file{font-family:var(--mono);font-size:10px;color:var(--gold);margin-bottom:18px;letter-spacing:.04em}
+.detail-body{font-size:13.5px;line-height:1.7;color:rgba(244,241,235,.6)}
+.detail-exports{display:flex;flex-wrap:wrap;gap:6px;margin-top:18px}
+.fn-tag{
+  font-family:var(--mono);font-size:10px;padding:3px 9px;border-radius:5px;
+  background:rgba(201,168,76,.1);border:1px solid rgba(201,168,76,.22);
+  color:var(--gold);letter-spacing:.04em;
+}
+.detail-code{
+  background:var(--ink);border-radius:10px;padding:22px;
+  font-family:var(--mono);font-size:11px;line-height:1.85;
+  overflow-x:auto;border:1px solid rgba(244,241,235,.05);
+  color:rgba(244,241,235,.65);
+}
+.ck{color:#c792ea}.cs{color:#c3e88d}.cn{color:#f78c6c}.cc{color:rgba(244,241,235,.22)}.cf{color:#82aaff}
+
+/* MODULES GRID */
+#modules{background:var(--ink)}
+.modules-grid{
+  display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));
+  gap:1px;background:rgba(244,241,235,.05);
+  border:1px solid rgba(244,241,235,.05);border-radius:20px;overflow:hidden;
+}
+.mod-card{
+  background:var(--ink2);padding:28px;cursor:pointer;
+  transition:background .25s;position:relative;overflow:hidden;
+}
+.mod-card::after{
+  content:'';position:absolute;inset:0;
+  background:linear-gradient(135deg,rgba(244,241,235,.025) 0%,transparent 60%);
+  opacity:0;transition:opacity .3s;pointer-events:none;
+}
+.mod-card:hover{background:var(--ink3)}
+.mod-card:hover::after{opacity:1}
+.mod-top-accent{
+  height:2px;position:absolute;top:0;left:0;right:0;
+  transform:scaleX(0);transform-origin:left;
+  transition:transform .35s cubic-bezier(.4,0,.2,1);
+}
+.mod-card:hover .mod-top-accent{transform:scaleX(1)}
+.mc-blue .mod-top-accent{background:linear-gradient(90deg,#1e4fd8,#25b09e)}
+.mc-gold .mod-top-accent{background:linear-gradient(90deg,var(--gold),var(--gold2))}
+.mc-rust .mod-top-accent{background:linear-gradient(90deg,var(--rust),#e8834a)}
+.mc-teal .mod-top-accent{background:linear-gradient(90deg,var(--teal),var(--teal2))}
+.mc-purple .mod-top-accent{background:linear-gradient(90deg,var(--purple),#9b59d0)}
+.mod-icon{font-size:26px;margin-bottom:14px;display:block}
+.mod-name{font-family:var(--display);font-size:1rem;font-weight:600;margin-bottom:5px;letter-spacing:-.01em}
+.mod-file{font-family:var(--mono);font-size:9px;letter-spacing:.05em;color:rgba(244,241,235,.28);margin-bottom:12px}
+.mod-desc{font-size:12.5px;line-height:1.65;color:rgba(244,241,235,.48)}
+.mod-tags{display:flex;flex-wrap:wrap;gap:5px;margin-top:14px}
+.mod-tag{
+  font-family:var(--mono);font-size:9px;padding:2px 7px;border-radius:4px;
+  background:rgba(244,241,235,.04);border:1px solid rgba(244,241,235,.07);
+  color:rgba(244,241,235,.3);
+}
+
+/* SCORING */
+#scoring{background:var(--ink2)}
+.scoring-layout{display:grid;grid-template-columns:1fr 1fr;gap:40px;align-items:start}
+.signals-list{display:flex;flex-direction:column;gap:0}
+.signal-row{
+  display:grid;grid-template-columns:80px 1fr 48px;
+  align-items:center;gap:14px;
+  padding:14px 10px;border-radius:6px;
+  border-bottom:1px solid rgba(244,241,235,.05);
+  cursor:pointer;transition:background .2s;
+}
+.signal-row:last-child{border-bottom:none}
+.signal-row:hover{background:rgba(244,241,235,.03)}
+.signal-name{font-family:var(--mono);font-size:10px;letter-spacing:.07em;text-transform:uppercase;color:rgba(244,241,235,.4)}
+.signal-track{height:3px;background:rgba(244,241,235,.06);border-radius:2px;overflow:hidden}
+.signal-fill{height:100%;border-radius:2px;transform:scaleX(0);transform-origin:left;transition:transform 1.1s cubic-bezier(.4,0,.2,1)}
+.signal-pct{font-family:var(--mono);font-size:12px;font-weight:500;text-align:right}
+.signal-detail-box{
+  margin-top:20px;padding:18px;border-radius:10px;
+  background:rgba(244,241,235,.025);border:1px solid rgba(244,241,235,.06);
+  font-size:13px;line-height:1.7;color:rgba(244,241,235,.5);
+  min-height:80px;transition:all .3s;
+}
+.intent-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.intent-card{
+  padding:18px;border-radius:10px;
+  background:rgba(244,241,235,.025);border:1px solid rgba(244,241,235,.06);
+  cursor:pointer;transition:all .25s;
+}
+.intent-card:hover{background:rgba(244,241,235,.05);transform:translateY(-2px)}
+.intent-badge{
+  font-family:var(--mono);font-size:9px;letter-spacing:.12em;text-transform:uppercase;
+  padding:2px 9px;border-radius:100px;display:inline-block;margin-bottom:8px;
+}
+.ib-ui{background:rgba(30,79,216,.15);color:#82aaff}
+.ib-backend{background:rgba(26,122,110,.18);color:var(--teal2)}
+.ib-config{background:rgba(201,168,76,.14);color:var(--gold)}
+.ib-data{background:rgba(107,47,160,.18);color:#c792ea}
+.ib-test{background:rgba(201,74,42,.14);color:#f78c6c}
+.ib-general{background:rgba(244,241,235,.07);color:rgba(244,241,235,.38)}
+.intent-triggers{font-size:11px;line-height:1.6;color:rgba(244,241,235,.38);font-family:var(--mono)}
+
+/* FLOW CANVAS */
+#flow{background:var(--ink)}
+.flow-canvas{
+  position:relative;height:480px;
+  border:1px solid rgba(244,241,235,.07);border-radius:18px;overflow:hidden;
+  background:var(--ink2);
+}
+.flow-canvas svg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+.flow-node{
+  position:absolute;padding:12px 18px;border-radius:10px;
+  font-family:var(--mono);font-size:10px;cursor:pointer;
+  transition:all .22s;border:1px solid;user-select:none;
+  white-space:nowrap;
+}
+.flow-node:hover{transform:scale(1.06);z-index:10}
+.fn-user{background:rgba(244,241,235,.05);border-color:rgba(244,241,235,.14);color:rgba(244,241,235,.75)}
+.fn-process{background:rgba(30,79,216,.09);border-color:rgba(30,79,216,.32);color:#82aaff}
+.fn-store{background:rgba(26,122,110,.09);border-color:rgba(26,122,110,.3);color:var(--teal2)}
+.fn-api{background:rgba(201,168,76,.07);border-color:rgba(201,168,76,.28);color:var(--gold)}
+.fn-label{font-weight:500;margin-bottom:1px}
+.fn-sub{font-size:8.5px;opacity:.5;letter-spacing:.04em}
+.flow-arrow{fill:none;stroke:rgba(244,241,235,.1);stroke-width:1.5;marker-end:url(#arrowTip)}
+.flow-arrow.hi{stroke:var(--gold);stroke-width:2;marker-end:url(#arrowTipGold)}
+
+/* PATCH */
+#patch{background:var(--ink2)}
+.patch-demo{
+  display:grid;grid-template-columns:1fr 1fr;gap:2px;
+  border-radius:14px;overflow:hidden;border:1px solid rgba(244,241,235,.06);
+}
+.patch-panel{background:var(--ink3);padding:26px;position:relative}
+.patch-panel-label{
+  font-family:var(--mono);font-size:9px;letter-spacing:.12em;
+  text-transform:uppercase;color:rgba(244,241,235,.28);
+  margin-bottom:14px;display:flex;align-items:center;gap:8px;
+}
+.patch-panel-label::before{content:'';width:6px;height:6px;border-radius:50%;flex-shrink:0}
+.orig .patch-panel-label::before{background:var(--rust)}
+.patched .patch-panel-label::before{background:var(--teal2)}
+.code-lines{font-family:var(--mono);font-size:11px;line-height:1.9;list-style:none}
+.code-line{display:flex;gap:14px;padding:1px 8px;border-radius:3px;transition:background .2s}
+.code-line:hover{background:rgba(244,241,235,.03)}
+.ln{color:rgba(244,241,235,.16);user-select:none;min-width:22px;text-align:right;flex-shrink:0;font-size:9.5px;padding-top:2px}
+.lc{flex:1;color:rgba(244,241,235,.62)}
+.line-del{background:rgba(201,74,42,.1)}
+.line-del .lc{color:var(--rust)}
+.line-del .ln{color:rgba(201,74,42,.35)}
+.line-add{background:rgba(26,122,110,.1)}
+.line-add .lc{color:var(--teal2)}
+.line-add .ln{color:rgba(26,122,110,.35)}
+.patch-stats{display:flex;gap:14px;margin-top:28px;justify-content:center;flex-wrap:wrap}
+.pstat{
+  padding:12px 20px;border-radius:10px;
+  font-family:var(--mono);font-size:11px;text-align:center;
+  background:rgba(244,241,235,.025);border:1px solid rgba(244,241,235,.06);
+}
+.pstat-num{font-size:22px;font-weight:500;display:block;margin-bottom:1px}
+.pstat-lbl{font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:rgba(244,241,235,.28)}
+.stat-add .pstat-num{color:var(--teal2)}
+.stat-del .pstat-num{color:var(--rust)}
+.stat-files .pstat-num{color:var(--gold)}
+.apply-btn{
+  display:block;margin:28px auto 0;
+  padding:13px 34px;border-radius:100px;
+  background:rgba(26,122,110,.13);border:1px solid rgba(26,122,110,.35);
+  color:var(--teal2);font-family:var(--mono);font-size:11px;letter-spacing:.08em;
+  cursor:pointer;transition:all .25s;text-transform:uppercase;
+  position:relative;overflow:hidden;
+}
+.apply-btn::before{
+  content:'';position:absolute;inset:0;
+  background:rgba(26,122,110,.18);
+  transform:translateX(-100%);transition:transform .35s;
+}
+.apply-btn:hover::before{transform:translateX(0)}
+.apply-btn:hover{border-color:var(--teal2);box-shadow:0 0 22px rgba(26,122,110,.22)}
+
+/* TECH */
+#tech{background:var(--ink)}
+.tech-marquee-wrap{overflow:hidden;margin-bottom:56px;position:relative}
+.tech-marquee-wrap::before,.tech-marquee-wrap::after{
+  content:'';position:absolute;top:0;bottom:0;width:70px;z-index:2;pointer-events:none;
+}
+.tech-marquee-wrap::before{left:0;background:linear-gradient(90deg,var(--ink),transparent)}
+.tech-marquee-wrap::after{right:0;background:linear-gradient(-90deg,var(--ink),transparent)}
+.tech-marquee{display:flex;gap:10px;animation:marquee 22s linear infinite;width:max-content}
+.tech-marquee:hover{animation-play-state:paused}
+@keyframes marquee{from{transform:translateX(0)}to{transform:translateX(-50%)}}
+.tech-chip{
+  padding:10px 18px;border-radius:100px;
+  border:1px solid rgba(244,241,235,.09);background:rgba(244,241,235,.03);
+  font-family:var(--mono);font-size:10px;color:rgba(244,241,235,.48);
+  white-space:nowrap;letter-spacing:.05em;transition:all .25s;cursor:default;flex-shrink:0;
+}
+.tech-chip:hover{border-color:var(--gold);color:var(--gold);background:rgba(201,168,76,.07)}
+.tech-deep-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+.tech-card{
+  border:1px solid rgba(244,241,235,.07);border-radius:14px;
+  padding:26px;background:rgba(244,241,235,.015);transition:all .25s;
+}
+.tech-card:hover{border-color:rgba(244,241,235,.13);background:rgba(244,241,235,.035);transform:translateY(-3px)}
+.tc-emoji{font-size:30px;margin-bottom:14px;display:block}
+.tc-name{font-family:var(--display);font-size:.95rem;font-weight:600;margin-bottom:4px}
+.tc-role{font-family:var(--mono);font-size:9px;color:var(--gold);letter-spacing:.1em;text-transform:uppercase;margin-bottom:10px}
+.tc-desc{font-size:12.5px;line-height:1.65;color:rgba(244,241,235,.42)}
+
+/* FOOTER */
+footer{
+  padding:56px 7vw;background:var(--ink2);
+  border-top:1px solid rgba(244,241,235,.05);
+  display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:16px;
+}
+.footer-brand{font-family:var(--display);font-size:1.1rem;font-weight:600;letter-spacing:-.01em}
+.footer-info{font-family:var(--mono);font-size:10px;color:rgba(244,241,235,.22);letter-spacing:.07em}
+
+/* RESPONSIVE */
+@media(max-width:900px){
+  .scoring-layout,.tech-deep-grid,.patch-demo{grid-template-columns:1fr}
+  .pipeline-track{grid-template-columns:repeat(4,1fr)}
+  .intent-grid{grid-template-columns:1fr}
+  #nav .nav-links{display:none}
+}
+@media(max-width:600px){
+  section{padding:80px 5vw}
+  #hero{padding:80px 5vw}
+  .pipeline-track{grid-template-columns:repeat(2,1fr)}
+  footer{flex-direction:column}
+  .pipeline-detail.visible{grid-template-columns:1fr}
+  .flow-canvas{height:320px}
+}
+</style>
+</head>
+<body>
+
+<div id="cursor"></div>
+<div id="cursor-ring"></div>
+
+<nav id="nav">
+  <div class="nav-brand"><div class="nav-dot"></div>Om AI Agent</div>
+  <div class="nav-links">
+    <button class="nav-link" onclick="goTo('pipeline')">Pipeline</button>
+    <button class="nav-link" onclick="goTo('modules')">Modules</button>
+    <button class="nav-link" onclick="goTo('scoring')">Scoring</button>
+    <button class="nav-link" onclick="goTo('flow')">Data Flow</button>
+    <button class="nav-link" onclick="goTo('patch')">Patch</button>
+    <button class="nav-link" onclick="goTo('tech')">Stack</button>
+  </div>
+</nav>
+
+<!-- HERO -->
+<section id="hero">
+  <div class="hero-bg"></div>
+  <div class="hero-grain"></div>
+  <div class="hero-watermark">ARCH</div>
+  <div class="hero-eyebrow">Architecture Reference</div>
+  <h1 class="hero-title">Om <em>AI</em><br/>Agent</h1>
+  <p class="hero-sub">An agentic coding assistant for VS Code — powered by Gemini 2.5 Flash, 7-signal hybrid search, AST code graphs, and syntax-validated patching.</p>
+  <div class="hero-pills">
+    <span class="pill">TypeScript</span>
+    <span class="pill">Gemini 2.5 Flash</span>
+    <span class="pill">text-embedding-004</span>
+    <span class="pill">VS Code API</span>
+    <span class="pill">TS Compiler API</span>
+  </div>
+  <div class="hero-scroll"><div class="hero-scroll-line"></div>scroll to explore</div>
+</section>
+
+<!-- PIPELINE -->
+<section id="pipeline">
+  <div class="section-label">01 <span>/</span> Agent Pipeline</div>
+  <h2 class="section-title reveal">Eight steps from<br/>prompt to code</h2>
+  <div class="pipeline-track reveal" id="pipelineTrack">
+    <div class="pipe-track-line"></div>
+    <div class="pipe-step active" onclick="selectStep(0)">
+      <div class="pipe-num">01</div><div class="pipe-icon">💬</div>
+      <div class="pipe-label">User<br/>Input</div>
+    </div>
+    <div class="pipe-step" onclick="selectStep(1)">
+      <div class="pipe-num">02</div><div class="pipe-icon">🗺</div>
+      <div class="pipe-label">Code<br/>Graph</div>
+    </div>
+    <div class="pipe-step" onclick="selectStep(2)">
+      <div class="pipe-num">03</div><div class="pipe-icon">🔍</div>
+      <div class="pipe-label">Hybrid<br/>Search</div>
+    </div>
+    <div class="pipe-step" onclick="selectStep(3)">
+      <div class="pipe-num">04</div><div class="pipe-icon">📋</div>
+      <div class="pipe-label">Rules<br/>Inject</div>
+    </div>
+    <div class="pipe-step" onclick="selectStep(4)">
+      <div class="pipe-num">05</div><div class="pipe-icon">🧠</div>
+      <div class="pipe-label">Brain<br/>Call</div>
+    </div>
+    <div class="pipe-step" onclick="selectStep(5)">
+      <div class="pipe-num">06</div><div class="pipe-icon">✅</div>
+      <div class="pipe-label">Validate<br/>Patches</div>
+    </div>
+    <div class="pipe-step" onclick="selectStep(6)">
+      <div class="pipe-num">07</div><div class="pipe-icon">👁</div>
+      <div class="pipe-label">Diff<br/>Preview</div>
+    </div>
+    <div class="pipe-step" onclick="selectStep(7)">
+      <div class="pipe-num">08</div><div class="pipe-icon">💾</div>
+      <div class="pipe-label">Write<br/>Files</div>
+    </div>
+  </div>
+  <div class="pipeline-detail visible reveal" id="pipelineDetail">
+    <div>
+      <div class="detail-title" id="dTitle">User submits instruction</div>
+      <div class="detail-file" id="dFile">chat/panel.ts · commands/slashCommands.ts</div>
+      <div class="detail-body" id="dBody">Natural language instruction arrives via the Chat Panel webview or a slash command (/fix, /explain, /doc, /test, /commit). The extension main handler receives it and begins orchestration. Slash commands extract the active editor selection as additional code context.</div>
+      <div class="detail-exports" id="dExports">
+        <span class="fn-tag">ChatViewProvider</span><span class="fn-tag">handleSlashCommand()</span><span class="fn-tag">onMessage()</span>
+      </div>
+    </div>
+    <div>
+      <div class="detail-code" id="dCode"><span class="cc">// Inbound message from webview</span>
+webview.<span class="cf">onDidReceiveMessage</span>(msg => {
+  <span class="ck">if</span> (msg.type === <span class="cs">'prompt'</span>) {
+    <span class="ck">this</span>._onMessage(msg.text);
+  }
+});
+
+<span class="cc">// Slash command router</span>
+<span class="ck">if</span> (trimmed.<span class="cf">startsWith</span>(<span class="cs">'/fix'</span>)) {
+  <span class="ck">return</span> { kind: <span class="cs">'fix'</span>, instruction };
+}</div>
+    </div>
+  </div>
+</section>
+
+<!-- MODULES -->
+<section id="modules">
+  <div class="section-label">02 <span>/</span> Module Reference</div>
+  <h2 class="section-title reveal">Every module,<br/>decoded</h2>
+  <div class="modules-grid reveal">
+    <div class="mod-card mc-blue"><div class="mod-top-accent"></div>
+      <span class="mod-icon">🧠</span><div class="mod-name">Gemini Client</div>
+      <div class="mod-file">core/client.ts</div>
+      <div class="mod-desc">Primary API wrapper for Google Generative AI. callBrain() uses gemini-2.5-flash (temp 0.1, JSON mode). Four-strategy JSON parse fallback: direct → strip fences → regex extract → success-key search.</div>
+      <div class="mod-tags"><span class="mod-tag">callBrain()</span><span class="mod-tag">callEmbeddingAPI()</span><span class="mod-tag">parseModelResponse()</span></div>
+    </div>
+    <div class="mod-card mc-gold"><div class="mod-top-accent"></div>
+      <span class="mod-icon">🔍</span><div class="mod-name">Hybrid Ranker</div>
+      <div class="mod-file">search/hybridRanker.ts</div>
+      <div class="mod-desc">Scores every workspace file across 7 weighted signals. Detects query intent to boost file type preferences. Enforces token budget (80K tokens / 15 files). Embedding calls gated to save API quota.</div>
+      <div class="mod-tags"><span class="mod-tag">hybridSearch()</span><span class="mod-tag">rerankByInstruction()</span><span class="mod-tag">detectQueryIntent()</span></div>
+    </div>
+    <div class="mod-card mc-teal"><div class="mod-top-accent"></div>
+      <span class="mod-icon">🗺</span><div class="mod-name">Code Graph</div>
+      <div class="mod-file">graph/codeGraph.ts</div>
+      <div class="mod-desc">Builds a workspace-wide AST dependency graph using the TypeScript Compiler API. Extracts imports, exports, functions, classes, interfaces, types. Builds reverse importedBy index for centrality scoring.</div>
+      <div class="mod-tags"><span class="mod-tag">buildCodeGraph()</span><span class="mod-tag">findRelatedFiles()</span><span class="mod-tag">findSymbol()</span></div>
+    </div>
+    <div class="mod-card mc-teal"><div class="mod-top-accent"></div>
+      <span class="mod-icon">🔢</span><div class="mod-name">Vector Store</div>
+      <div class="mod-file">search/vectorStore.ts</div>
+      <div class="mod-desc">In-memory cache of text→float[] embeddings (768 dimensions). Prevents redundant Embedding API calls. cosineSimilarity() normalized from [-1,1] to [0,1].</div>
+      <div class="mod-tags"><span class="mod-tag">getEmbedding()</span><span class="mod-tag">cosineSimilarity()</span></div>
+    </div>
+    <div class="mod-card mc-rust"><div class="mod-top-accent"></div>
+      <span class="mod-icon">🔧</span><div class="mod-name">AST Patcher</div>
+      <div class="mod-file">patcher/astPatcher.ts</div>
+      <div class="mod-desc">Applies line-range edits bottom-up (sorted desc by startLine) to prevent offset drift. Validates TypeScript files via getSyntacticDiagnostics() — only valid code is written to disk.</div>
+      <div class="mod-tags"><span class="mod-tag">applyAstSafePatches()</span></div>
+    </div>
+    <div class="mod-card mc-rust"><div class="mod-top-accent"></div>
+      <span class="mod-icon">🔄</span><div class="mod-name">Multi-Pass Patcher</div>
+      <div class="mod-file">patcher/multiPassPatcher.ts</div>
+      <div class="mod-desc">Runs up to 3 validation passes checking import resolution, edit range integrity, cross-file dependencies. Critical errors trigger AI-driven correction via fixPatchErrors().</div>
+      <div class="mod-tags"><span class="mod-tag">generateMultiPassPatches()</span><span class="mod-tag">validatePatches()</span></div>
+    </div>
+    <div class="mod-card mc-blue"><div class="mod-top-accent"></div>
+      <span class="mod-icon">💬</span><div class="mod-name">Chat Panel</div>
+      <div class="mod-file">chat/panel.ts</div>
+      <div class="mod-desc">VS Code WebviewViewProvider for the dark-themed chat sidebar. postLog() for status, postMessage() for AI responses. Uses native --vscode-* CSS variables for theme integration.</div>
+      <div class="mod-tags"><span class="mod-tag">ChatViewProvider</span><span class="mod-tag">postLog()</span><span class="mod-tag">postMessage()</span></div>
+    </div>
+    <div class="mod-card mc-purple"><div class="mod-top-accent"></div>
+      <span class="mod-icon">⚡</span><div class="mod-name">Slash Commands</div>
+      <div class="mod-file">commands/slashCommands.ts</div>
+      <div class="mod-desc">Dispatches /explain, /fix, /doc, /test, /commit. /explain and /doc call Brain directly. /fix returns an instruction object for the extension host to dispatch through the full pipeline.</div>
+      <div class="mod-tags"><span class="mod-tag">/explain</span><span class="mod-tag">/fix</span><span class="mod-tag">/doc</span><span class="mod-tag">/test</span><span class="mod-tag">/commit</span></div>
+    </div>
+    <div class="mod-card mc-gold"><div class="mod-top-accent"></div>
+      <span class="mod-icon">📋</span><div class="mod-name">Rules Loader</div>
+      <div class="mod-file">commands/rulesLoader.ts</div>
+      <div class="mod-desc">Reads .om-ai-rules.md from workspace root and injects it as "Project Rules" into every Brain prompt — like .cursorrules. Supports scaffolding a default rules file.</div>
+      <div class="mod-tags"><span class="mod-tag">loadProjectRules()</span><span class="mod-tag">initRulesFile()</span></div>
+    </div>
+    <div class="mod-card mc-blue"><div class="mod-top-accent"></div>
+      <span class="mod-icon">↩️</span><div class="mod-name">Retry Loop</div>
+      <div class="mod-file">core/retryLoop.ts</div>
+      <div class="mod-desc">Wraps callBrain() with up to 3 attempts. Each failure appends "Return valid JSON with changes array." before retrying. Returns first valid response or failure object.</div>
+      <div class="mod-tags"><span class="mod-tag">runWithRetry()</span><span class="mod-tag">3 attempts</span></div>
+    </div>
+    <div class="mod-card mc-teal"><div class="mod-top-accent"></div>
+      <span class="mod-icon">👁</span><div class="mod-name">Diff Preview</div>
+      <div class="mod-file">features/diffPreview.ts</div>
+      <div class="mod-desc">GitHub-style side-by-side diff webview. Left = original, right = patched. Counts +additions/−deletions. Returns a Promise resolved only by user Apply or Cancel action.</div>
+      <div class="mod-tags"><span class="mod-tag">showDiffPreview()</span><span class="mod-tag">generateSideBySideDiff()</span></div>
+    </div>
+    <div class="mod-card mc-gold"><div class="mod-top-accent"></div>
+      <span class="mod-icon">🗂</span><div class="mod-name">Indexer</div>
+      <div class="mod-file">features/indexer.ts</div>
+      <div class="mod-desc">Lightweight wrapper around vscode.workspace.findFiles returning all .ts/.tsx/.js/.jsx files, excluding node_modules, dist, .git. Feeds the hybrid ranker and code graph.</div>
+      <div class="mod-tags"><span class="mod-tag">indexProject()</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- SCORING -->
+<section id="scoring">
+  <div class="section-label">03 <span>/</span> Hybrid Scoring</div>
+  <h2 class="section-title reveal">7 signals, one<br/>ranked result</h2>
+  <div class="scoring-layout reveal">
+    <div>
+      <div class="signals-list" id="signalsList">
+        <div class="signal-row" onclick="showSignal('keyword')">
+          <div class="signal-name">Keyword</div>
+          <div class="signal-track"><div class="signal-fill" data-pct="25" style="background:linear-gradient(90deg,#82aaff,#58c4dc)"></div></div>
+          <div class="signal-pct" style="color:#82aaff">25%</div>
+        </div>
+        <div class="signal-row" onclick="showSignal('semantic')">
+          <div class="signal-name">Semantic</div>
+          <div class="signal-track"><div class="signal-fill" data-pct="20" style="background:linear-gradient(90deg,#c792ea,#82aaff)"></div></div>
+          <div class="signal-pct" style="color:#c792ea">20%</div>
+        </div>
+        <div class="signal-row" onclick="showSignal('intent')">
+          <div class="signal-name">Intent</div>
+          <div class="signal-track"><div class="signal-fill" data-pct="15" style="background:linear-gradient(90deg,#c9a84c,#f0c040)"></div></div>
+          <div class="signal-pct" style="color:var(--gold)">15%</div>
+        </div>
+        <div class="signal-row" onclick="showSignal('graph')">
+          <div class="signal-name">Graph</div>
+          <div class="signal-track"><div class="signal-fill" data-pct="15" style="background:linear-gradient(90deg,#25b09e,#3fd9c6)"></div></div>
+          <div class="signal-pct" style="color:var(--teal2)">15%</div>
+        </div>
+        <div class="signal-row" onclick="showSignal('symbol')">
+          <div class="signal-name">Symbol</div>
+          <div class="signal-track"><div class="signal-fill" data-pct="15" style="background:linear-gradient(90deg,#82aaff,#58c4dc)"></div></div>
+          <div class="signal-pct" style="color:#82aaff">15%</div>
+        </div>
+        <div class="signal-row" onclick="showSignal('recency')">
+          <div class="signal-name">Recency</div>
+          <div class="signal-track"><div class="signal-fill" data-pct="5" style="background:linear-gradient(90deg,#f78c6c,#ffa757)"></div></div>
+          <div class="signal-pct" style="color:#f78c6c">5%</div>
+        </div>
+        <div class="signal-row" onclick="showSignal('type')">
+          <div class="signal-name">Type</div>
+          <div class="signal-track"><div class="signal-fill" data-pct="5" style="background:rgba(244,241,235,.4)"></div></div>
+          <div class="signal-pct" style="color:rgba(244,241,235,.4)">5%</div>
+        </div>
+      </div>
+      <div class="signal-detail-box" id="signalDetailBox">Click any signal row to see how it is computed.</div>
+    </div>
+    <div>
+      <div style="font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:rgba(244,241,235,.28);margin-bottom:14px;">Intent Classification</div>
+      <div class="intent-grid">
+        <div class="intent-card"><div class="intent-badge ib-ui">UI</div><div class="intent-triggers">pricing · plan · component · page · tailwind · react · button · modal · css</div></div>
+        <div class="intent-card"><div class="intent-badge ib-backend">Backend</div><div class="intent-triggers">api · route · endpoint · controller · service · auth · middleware</div></div>
+        <div class="intent-card"><div class="intent-badge ib-config">Config</div><div class="intent-triggers">config · setting · env · tsconfig · webpack · vite · babel · eslint</div></div>
+        <div class="intent-card"><div class="intent-badge ib-data">Data</div><div class="intent-triggers">store · state · redux · zustand · context · hook · fetch · axios</div></div>
+        <div class="intent-card"><div class="intent-badge ib-test">Test</div><div class="intent-triggers">test · spec · jest · describe · expect · mock · stub · fixture</div></div>
+        <div class="intent-card"><div class="intent-badge ib-general">General</div><div class="intent-triggers">fallback — no strong signal detected. Standard TypeScript preference applies.</div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- DATA FLOW -->
+<section id="flow">
+  <div class="section-label">04 <span>/</span> Data Flow</div>
+  <h2 class="section-title reveal">Interactive data<br/>flow map</h2>
+  <div class="flow-canvas reveal" id="flowCanvas">
+    <svg id="flowSvg">
+      <defs>
+        <marker id="arrowTip" markerWidth="7" markerHeight="5" refX="5" refY="2.5" orient="auto">
+          <polygon points="0 0,7 2.5,0 5" fill="rgba(244,241,235,.18)"/>
+        </marker>
+        <marker id="arrowTipGold" markerWidth="7" markerHeight="5" refX="5" refY="2.5" orient="auto">
+          <polygon points="0 0,7 2.5,0 5" fill="#c9a84c"/>
+        </marker>
+      </defs>
+    </svg>
+    <div class="flow-node fn-user"  id="fn-user"      style="left:2%;top:42%"><div class="fn-label">👤 Developer</div><div class="fn-sub">natural language</div></div>
+    <div class="flow-node fn-process" id="fn-parse"   style="left:16%;top:20%"><div class="fn-label">Parse &amp; Route</div><div class="fn-sub">panel.ts</div></div>
+    <div class="flow-node fn-process" id="fn-graph"   style="left:16%;top:60%"><div class="fn-label">Code Graph</div><div class="fn-sub">codeGraph.ts</div></div>
+    <div class="flow-node fn-store"   id="fn-gcache"  style="left:2%;top:74%"><div class="fn-label">🗄 Graph Cache</div><div class="fn-sub">in-memory</div></div>
+    <div class="flow-node fn-process" id="fn-hybrid"  style="left:35%;top:18%"><div class="fn-label">Hybrid Search</div><div class="fn-sub">hybridRanker.ts</div></div>
+    <div class="flow-node fn-store"   id="fn-vcache"  style="left:35%;top:70%"><div class="fn-label">🗄 Vector Cache</div><div class="fn-sub">vectorStore.ts</div></div>
+    <div class="flow-node fn-api"     id="fn-emb"     style="left:53%;top:76%"><div class="fn-label">✦ Embedding API</div><div class="fn-sub">text-embedding-004</div></div>
+    <div class="flow-node fn-process" id="fn-rules"   style="left:53%;top:8%"><div class="fn-label">Rules Inject</div><div class="fn-sub">rulesLoader.ts</div></div>
+    <div class="flow-node fn-api"     id="fn-brain"   style="left:69%;top:28%"><div class="fn-label">✦ Brain</div><div class="fn-sub">gemini-2.5-flash</div></div>
+    <div class="flow-node fn-process" id="fn-validate" style="left:69%;top:58%"><div class="fn-label">Validate Patches</div><div class="fn-sub">multiPassPatcher.ts</div></div>
+    <div class="flow-node fn-process" id="fn-diff"    style="left:84%;top:38%"><div class="fn-label">Diff Preview</div><div class="fn-sub">diffPreview.ts</div></div>
+    <div class="flow-node fn-store"   id="fn-files"   style="left:84%;top:64%"><div class="fn-label">📁 Workspace</div><div class="fn-sub">AST patched</div></div>
+  </div>
+  <div style="margin-top:16px;display:flex;gap:20px;flex-wrap:wrap;" class="reveal">
+    <div style="display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:10px;color:rgba(244,241,235,.28)"><div style="width:20px;height:1px;background:rgba(244,241,235,.18)"></div>data flow</div>
+    <div style="display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:10px;color:rgba(244,241,235,.28)"><div style="width:20px;height:2px;background:var(--gold)"></div>highlighted path</div>
+    <div style="font-family:var(--mono);font-size:10px;color:rgba(244,241,235,.2)">Hover nodes to trace connections</div>
+  </div>
+</section>
+
+<!-- PATCH -->
+<section id="patch">
+  <div class="section-label">05 <span>/</span> Patch System</div>
+  <h2 class="section-title reveal">How code edits<br/>are applied</h2>
+  <div class="patch-demo reveal">
+    <div class="patch-panel orig">
+      <div class="patch-panel-label">Original file</div>
+      <ol class="code-lines">
+        <li class="code-line"><span class="ln">1</span><span class="lc"><span style="color:#c792ea">import</span> React <span style="color:#c792ea">from</span> <span style="color:#c3e88d">'react'</span>;</span></li>
+        <li class="code-line"><span class="ln">2</span><span class="lc"></span></li>
+        <li class="code-line"><span class="ln">3</span><span class="lc"><span style="color:#c792ea">interface</span> Props { data: <span style="color:#f78c6c">string</span>[] }</span></li>
+        <li class="code-line"><span class="ln">4</span><span class="lc"></span></li>
+        <li class="code-line"><span class="ln">5</span><span class="lc"><span style="color:#c792ea">export</span> <span style="color:#c792ea">const</span> Dashboard = ({ data }: Props) =&gt; {</span></li>
+        <li class="code-line"><span class="ln">6</span><span class="lc">  <span style="color:#c792ea">return</span> (</span></li>
+        <li class="code-line line-del"><span class="ln">7</span><span class="lc">    &lt;div className=<span style="color:#c3e88d">"container"</span>&gt;</span></li>
+        <li class="code-line line-del"><span class="ln">8</span><span class="lc">      &lt;ul&gt;{data.map(d =&gt; &lt;li&gt;{d}&lt;/li&gt;)}&lt;/ul&gt;</span></li>
+        <li class="code-line line-del"><span class="ln">9</span><span class="lc">    &lt;/div&gt;</span></li>
+        <li class="code-line"><span class="ln">10</span><span class="lc">  );</span></li>
+        <li class="code-line"><span class="ln">11</span><span class="lc">};</span></li>
+      </ol>
+    </div>
+    <div class="patch-panel patched">
+      <div class="patch-panel-label">Patched result</div>
+      <ol class="code-lines">
+        <li class="code-line"><span class="ln">1</span><span class="lc"><span style="color:#c792ea">import</span> React <span style="color:#c792ea">from</span> <span style="color:#c3e88d">'react'</span>;</span></li>
+        <li class="code-line line-add"><span class="ln">2</span><span class="lc"><span style="color:#c792ea">import</span> { Spinner } <span style="color:#c792ea">from</span> <span style="color:#c3e88d">'./Spinner'</span>;</span></li>
+        <li class="code-line"><span class="ln">3</span><span class="lc"></span></li>
+        <li class="code-line line-add"><span class="ln">4</span><span class="lc"><span style="color:#c792ea">interface</span> Props { data: <span style="color:#f78c6c">string</span>[]; isLoading?: <span style="color:#f78c6c">boolean</span> }</span></li>
+        <li class="code-line"><span class="ln">5</span><span class="lc"></span></li>
+        <li class="code-line line-add"><span class="ln">6</span><span class="lc"><span style="color:#c792ea">export</span> <span style="color:#c792ea">const</span> Dashboard = ({ data, isLoading }: Props) =&gt; {</span></li>
+        <li class="code-line"><span class="ln">7</span><span class="lc">  <span style="color:#c792ea">return</span> (</span></li>
+        <li class="code-line line-add"><span class="ln">8</span><span class="lc">    &lt;div className=<span style="color:#c3e88d">"container"</span>&gt;</span></li>
+        <li class="code-line line-add"><span class="ln">9</span><span class="lc">      {isLoading ? &lt;Spinner /&gt; : (</span></li>
+        <li class="code-line line-add"><span class="ln">10</span><span class="lc">        &lt;ul&gt;{data.map((d,i) =&gt; &lt;li key={i}&gt;{d}&lt;/li&gt;)}&lt;/ul&gt;</span></li>
+        <li class="code-line line-add"><span class="ln">11</span><span class="lc">      )}</span></li>
+        <li class="code-line line-add"><span class="ln">12</span><span class="lc">    &lt;/div&gt;</span></li>
+        <li class="code-line"><span class="ln">13</span><span class="lc">  );</span></li>
+        <li class="code-line"><span class="ln">14</span><span class="lc">};</span></li>
+      </ol>
+    </div>
+  </div>
+  <div class="patch-stats reveal">
+    <div class="pstat stat-add"><span class="pstat-num">+7</span><span class="pstat-lbl">Additions</span></div>
+    <div class="pstat stat-del"><span class="pstat-num">−3</span><span class="pstat-lbl">Deletions</span></div>
+    <div class="pstat stat-files"><span class="pstat-num">1</span><span class="pstat-lbl">File</span></div>
+    <div class="pstat"><span class="pstat-num" style="color:var(--teal2)">✓</span><span class="pstat-lbl">Syntax Valid</span></div>
+  </div>
+  <button class="apply-btn reveal" onclick="animateApply(this)">Apply Changes</button>
+</section>
+
+<!-- TECH -->
+<section id="tech">
+  <div class="section-label">06 <span>/</span> Technology Stack</div>
+  <h2 class="section-title reveal">Built on solid<br/>foundations</h2>
+  <div class="tech-marquee-wrap reveal">
+    <div class="tech-marquee">
+      <span class="tech-chip">TypeScript 5</span><span class="tech-chip">VS Code Extension API</span><span class="tech-chip">Gemini 2.5 Flash</span><span class="tech-chip">text-embedding-004</span><span class="tech-chip">@google/generative-ai</span><span class="tech-chip">TypeScript Compiler API</span><span class="tech-chip">Node.js 18+</span><span class="tech-chip">WebviewViewProvider</span><span class="tech-chip">Cosine Similarity</span><span class="tech-chip">AST Parsing</span><span class="tech-chip">JSON Mode</span><span class="tech-chip">768-dim Vectors</span>
+      <span class="tech-chip">TypeScript 5</span><span class="tech-chip">VS Code Extension API</span><span class="tech-chip">Gemini 2.5 Flash</span><span class="tech-chip">text-embedding-004</span><span class="tech-chip">@google/generative-ai</span><span class="tech-chip">TypeScript Compiler API</span><span class="tech-chip">Node.js 18+</span><span class="tech-chip">WebviewViewProvider</span><span class="tech-chip">Cosine Similarity</span><span class="tech-chip">AST Parsing</span><span class="tech-chip">JSON Mode</span><span class="tech-chip">768-dim Vectors</span>
+    </div>
+  </div>
+  <div class="tech-deep-grid reveal">
+    <div class="tech-card"><span class="tc-emoji">🧠</span><div class="tc-name">Gemini 2.5 Flash</div><div class="tc-role">Code Generation Brain</div><div class="tc-desc">Primary model for generating code patches. Temperature 0.1 for determinism. JSON-only response mode. Four-strategy parse fallback handles malformed outputs.</div></div>
+    <div class="tech-card"><span class="tc-emoji">🔢</span><div class="tc-name">text-embedding-004</div><div class="tc-role">Semantic Vectors</div><div class="tc-desc">768-dimensional float vectors for semantic file similarity. Calls are gated behind keyword pre-filters (score > 0.02 or file < 20K chars) to conserve API quota.</div></div>
+    <div class="tech-card"><span class="tc-emoji">🔷</span><div class="tc-name">TypeScript Compiler API</div><div class="tc-role">AST Analysis + Validation</div><div class="tc-desc">Dual use: building the workspace code graph via ts.createSourceFile, and validating patched files via getSyntacticDiagnostics() before writing to disk.</div></div>
+    <div class="tech-card"><span class="tc-emoji">🧩</span><div class="tc-name">VS Code Extension API</div><div class="tc-role">Runtime Environment</div><div class="tc-desc">WebviewViewProvider for chat sidebar, window.createWebviewPanel for diff viewer, workspace.findFiles for discovery, workspace.fs.stat for recency scoring.</div></div>
+    <div class="tech-card"><span class="tc-emoji">📦</span><div class="tc-name">@google/generative-ai</div><div class="tc-role">Official SDK</div><div class="tc-desc">Handles authentication, request formatting, and model selection. Abstracts the HTTP layer for both Brain (generateContent) and Embedding (embedContent) calls.</div></div>
+    <div class="tech-card"><span class="tc-emoji">⚡</span><div class="tc-name">Node.js 18+</div><div class="tc-role">Extension Host Runtime</div><div class="tc-desc">fs module handles direct file I/O during patch application. path ensures cross-platform resolution. No bundler required for the extension host process.</div></div>
+  </div>
+</section>
+
+<footer>
+  <div class="footer-brand">Om AI Agent</div>
+  <div class="footer-info">Architecture Reference · Gemini 2.5 Flash + TypeScript Compiler API</div>
+</footer>
+
+<script>
+// CURSOR
+const cur=document.getElementById('cursor'),ring=document.getElementById('cursor-ring');
+let mx=0,my=0,rx=0,ry=0;
+document.addEventListener('mousemove',e=>{mx=e.clientX;my=e.clientY;cur.style.left=mx+'px';cur.style.top=my+'px';});
+(function loop(){rx+=(mx-rx)*.12;ry+=(my-ry)*.12;ring.style.left=rx+'px';ring.style.top=ry+'px';requestAnimationFrame(loop);})();
+document.querySelectorAll('button,.pipe-step,.mod-card,.signal-row,.intent-card,.tech-card,.flow-node,.apply-btn,.tech-chip').forEach(el=>{
+  el.addEventListener('mouseenter',()=>{cur.style.width='16px';cur.style.height='16px';ring.style.width='50px';ring.style.height='50px';});
+  el.addEventListener('mouseleave',()=>{cur.style.width='10px';cur.style.height='10px';ring.style.width='36px';ring.style.height='36px';});
+});
+
+// NAV
+window.addEventListener('scroll',()=>{
+  document.getElementById('nav').classList.toggle('scrolled',scrollY>40);
+  document.querySelectorAll('section[id]').forEach(s=>{
+    const r=s.getBoundingClientRect();
+    if(r.top<=110&&r.bottom>110){
+      document.querySelectorAll('.nav-link').forEach(l=>l.classList.remove('active'));
+      const m=document.querySelector(`.nav-link[onclick="goTo('${s.id}')"]`);
+      if(m)m.classList.add('active');
+    }
+  });
+});
+function goTo(id){document.getElementById(id).scrollIntoView({behavior:'smooth',block:'start'});}
+
+// REVEAL
+const ro=new IntersectionObserver(e=>e.forEach(x=>{if(x.isIntersecting){x.target.classList.add('visible');ro.unobserve(x.target);}}),{threshold:.1});
+document.querySelectorAll('.reveal').forEach(el=>ro.observe(el));
+
+// SIGNAL BARS
+const bo=new IntersectionObserver(e=>e.forEach(x=>{
+  if(x.isIntersecting){
+    x.target.querySelectorAll('.signal-fill').forEach(b=>{b.style.transform=`scaleX(${+b.dataset.pct/100})`;});
+    bo.unobserve(x.target);
+  }
+}),{threshold:.3});
+const sl=document.getElementById('signalsList');if(sl)bo.observe(sl);
+
+const signalData={
+  keyword:'Content pattern matching: regex hits for query entities in file content (+0.03 each, capped 0.15), path-based boosts for matching folders like /components/ or /api/ (+0.40), target filename hints (+0.35), entity keywords in the file path (+0.15). The most reliable signal for intent-specific queries.',
+  semantic:'Cosine similarity between the query embedding and the file embedding (text-embedding-004, 768 dims). Normalized from [-1,1] to [0,1]. Gated: files are only embedded if keyword score > 0.02 or content < 20,000 chars. Falls back to keyword-only scoring if embeddings fail.',
+  intent:'File type boost based on detected query intent. UI queries prefer .tsx/.jsx (1.0) and components/pages folders (0.9). Backend prefers routes/controllers (1.0). Config prefers config/*.json and tailwind/vite files (0.9–1.0). Test prefers *.test.ts/*.spec.ts (1.0).',
+  graph:'AST-derived signals from the code graph. Direct symbol match in a file: +0.15 per match (capped 0.5). Files related via import graph at depth-2: +0.03 per related file (capped 0.2). Import centrality — files imported by many others: +0.02 per importer (capped 0.15).',
+  symbol:'Named symbol overlap between extracted query entities (CamelCase identifiers, function call patterns) and the symbol table of each file. Score = matched symbols / total query symbols. Falls back to text-based search for files not in the code graph.',
+  recency:'Time-decay score: 1 − (daysSinceModified / 365). A file modified today scores 1.0; one modified a year ago scores 0.0. Uses vscode.workspace.fs.stat().mtime. Small but meaningful bias toward recently active files.',
+  type:'Extension priority table: .ts → 1.0, .tsx → 0.95, .js → 0.8, .jsx → 0.75, .json → 0.5, .css/.scss/.html → 0.4, unknown → 0.3. Ensures TypeScript source files are preferred over generated or static assets.',
+};
+function showSignal(key){
+  document.querySelectorAll('.signal-row').forEach(r=>r.style.background='');
+  event.currentTarget.style.background='rgba(201,168,76,.06)';
+  document.getElementById('signalDetailBox').textContent=signalData[key]||'';
+}
+
+// PIPELINE STEPS
+const steps=[
+  {title:'User submits instruction',file:'chat/panel.ts · commands/slashCommands.ts',body:'Natural language instruction arrives via the Chat Panel webview or a slash command (/fix, /explain, /doc, /test, /commit). The extension main handler receives it and begins orchestration. Slash commands extract the active editor selection as additional code context.',exports:['ChatViewProvider','handleSlashCommand()','onMessage()'],code:`<span class="cc">// Inbound message from webview</span>
+webview.<span class="cf">onDidReceiveMessage</span>(msg => {
+  <span class="ck">if</span> (msg.type === <span class="cs">'prompt'</span>) {
+    <span class="ck">this</span>._onMessage(msg.text);
+  }
+});
+
+<span class="cc">// Slash command router</span>
+<span class="ck">if</span> (trimmed.<span class="cf">startsWith</span>(<span class="cs">'/fix'</span>)) {
+  <span class="ck">return</span> { kind: <span class="cs">'fix'</span>, instruction };
+}`},
+  {title:'Build Code Graph (cached)',file:'graph/codeGraph.ts',body:'TypeScript Compiler API (ts.createSourceFile) parses every .ts/.tsx/.js/.jsx file into an in-memory AST. Extracts imports, exports, functions, classes, interfaces, and types with their line ranges. Builds reverse importedBy index. Cached until force-rebuilt.',exports:['buildCodeGraph()','findRelatedFiles()','findSymbol()','getFileDependencies()'],code:`<span class="cc">// Parse with TS Compiler API</span>
+<span class="ck">const</span> sf = ts.<span class="cf">createSourceFile</span>(
+  relPath, content, ts.ScriptTarget.Latest,
+  <span class="ck">true</span>, ts.ScriptKind.TSX
+);
+<span class="cc">// Extract symbols recursively</span>
+<span class="ck">function</span> <span class="cf">visit</span>(n: ts.Node) {
+  <span class="ck">if</span> (ts.<span class="cf">isFunctionDeclaration</span>(n)) {
+    node.symbols.<span class="cf">push</span>({ name, kind: <span class="cs">'function'</span> });
+  }
+  ts.<span class="cf">forEachChild</span>(n, visit);
+}`},
+  {title:'Hybrid Search — 7 signals',file:'search/hybridRanker.ts · search/vectorStore.ts',body:'Scores every workspace file across 7 weighted signals: keyword (25%), semantic (20%), intent (15%), graph (15%), symbol (15%), recency (5%), type (5%). Embedding calls are gated behind keyword thresholds to save API quota. Token budget enforced: 80K tokens / 15 files max.',exports:['hybridSearch()','rerankByInstruction()','detectQueryIntent()'],code:`<span class="ck">const</span> total =
+  semantic  * <span class="cn">0.20</span> +
+  graph     * <span class="cn">0.15</span> +
+  symbol    * <span class="cn">0.15</span> +
+  recency   * <span class="cn">0.05</span> +
+  type      * <span class="cn">0.05</span> +
+  keyword   * <span class="cn">0.25</span> +
+  intent    * <span class="cn">0.15</span>;
+
+<span class="cc">// Gate embeddings to save quota</span>
+<span class="ck">if</span> (kwScore > <span class="cn">.02</span> || content.length < <span class="cn">20000</span>) {
+  sem = <span class="cf">cosineSimilarity</span>(qEmb, fEmb);
+}`},
+  {title:'Rules injection',file:'commands/rulesLoader.ts',body:'Reads .om-ai-rules.md from workspace root. If present, its content is appended to every Brain prompt as "Project Rules" — like Cursor\'s .cursorrules. initRulesFile() scaffolds a default rules file with TypeScript conventions.',exports:['loadProjectRules()','initRulesFile()'],code:`<span class="ck">const</span> RULES = <span class="cs">'.om-ai-rules.md'</span>;
+
+<span class="ck">function</span> <span class="cf">loadProjectRules</span>() {
+  <span class="ck">const</span> p = path.<span class="cf">join</span>(root, RULES);
+  <span class="ck">if</span> (!fs.<span class="cf">existsSync</span>(p)) <span class="ck">return</span> <span class="cs">''</span>;
+  <span class="ck">const</span> c = fs.<span class="cf">readFileSync</span>(p, <span class="cs">'utf-8'</span>);
+  <span class="ck">return</span> <span class="cs">\`## Project Rules\\n\${c}\`</span>;
+}`},
+  {title:'Brain call with retry',file:'core/client.ts · core/retryLoop.ts',body:'callBrain() sends instruction + context + rules to gemini-2.5-flash (temp 0.1, JSON mode). Four-strategy JSON parse fallback: direct → strip fences → regex {} extract → success-key search. runWithRetry() wraps this with up to 3 attempts.',exports:['callBrain()','callEmbeddingAPI()','runWithRetry()'],code:`<span class="cc">// 4-strategy JSON parse fallback</span>
+<span class="ck">function</span> <span class="cf">parseModelResponse</span>(text) {
+  <span class="ck">try</span> { <span class="ck">return</span> JSON.<span class="cf">parse</span>(text); } <span class="ck">catch</span> {}
+  <span class="ck">const</span> s = text.<span class="cf">replace</span>(<span class="cn">/^\`\`\`json/im</span>,<span class="cs">''</span>).<span class="cf">trim</span>();
+  <span class="ck">try</span> { <span class="ck">return</span> JSON.<span class="cf">parse</span>(s); } <span class="ck">catch</span> {}
+  <span class="ck">const</span> m = text.<span class="cf">match</span>(<span class="cn">/\{[\s\S]*\}/</span>);
+  <span class="ck">if</span> (m) <span class="ck">return</span> JSON.<span class="cf">parse</span>(m[<span class="cn">0</span>]);
+}`},
+  {title:'Multi-pass patch validation',file:'patcher/multiPassPatcher.ts',body:'Runs up to 3 validation passes. Each checks: import resolution (broken relative imports → warning), edit range integrity (startLine > endLine → error), cross-file dependency ordering. Critical errors trigger fixPatchErrors() for AI-driven correction.',exports:['generateMultiPassPatches()','validatePatches()','suggestRelatedPatches()'],code:`<span class="ck">for</span> (<span class="ck">let</span> pass = <span class="cn">1</span>; pass <= opts.maxPasses; pass++) {
+  <span class="ck">const</span> diags = <span class="ck">await</span> <span class="cf">validatePatches</span>(
+    patches, graph, root, { pass }
+  );
+  <span class="ck">const</span> errs = diags.<span class="cf">filter</span>(
+    d => d.severity === <span class="cs">'error'</span>
+  );
+  <span class="ck">if</span> (errs.length) patches =
+    <span class="ck">await</span> <span class="cf">fixPatchErrors</span>(patches, errs, root, graph);
+}`},
+  {title:'Side-by-side diff preview',file:'features/diffPreview.ts',body:'Creates a VS Code webview panel with GitHub-style side-by-side diff. Left = original, right = patched. Lines colored green (additions) and red (deletions) with totals. Returns a Promise resolved only when the user explicitly clicks Apply or Cancel.',exports:['showDiffPreview()','generateSideBySideDiff()'],code:`<span class="ck">return</span> <span class="ck">new</span> <span class="cf">Promise</span>(resolve => {
+  panel.webview.<span class="cf">onDidReceiveMessage</span>(<span class="ck">async</span> msg => {
+    <span class="ck">if</span> (msg.type === <span class="cs">'apply'</span>) {
+      <span class="ck">await</span> <span class="cf">applyPatches</span>(patches, root);
+      <span class="cf">resolve</span>(<span class="ck">true</span>);
+      panel.<span class="cf">dispose</span>();
+    }
+    <span class="ck">if</span> (msg.type === <span class="cs">'cancel'</span>) {
+      <span class="cf">resolve</span>(<span class="ck">false</span>); panel.<span class="cf">dispose</span>();
+    }
+  });
+});`},
+  {title:'AST-safe file write',file:'patcher/astPatcher.ts',body:'Edits sorted by startLine descending (bottom-up prevents offset drift). Each edit applied via Array.splice(). TypeScript and TSX files validated with ts.getSyntacticDiagnostics() — only syntactically valid code is written to disk. Other file types written directly.',exports:['applyAstSafePatches()'],code:`<span class="cc">// Sort DESC to prevent offset drift</span>
+<span class="ck">const</span> sorted = [...patch.edits].<span class="cf">sort</span>(
+  (a, b) => b.startLine - a.startLine
+);
+lines.<span class="cf">splice</span>(start, deleteCount, ...newLines);
+
+<span class="cc">// TS/TSX: validate before writing</span>
+<span class="ck">const</span> diags = prog.<span class="cf">getSyntacticDiagnostics</span>();
+<span class="ck">if</span> (!diags.length) fs.<span class="cf">writeFileSync</span>(path, updated);`}
+];
+
+function selectStep(i){
+  document.querySelectorAll('.pipe-step').forEach((s,j)=>s.classList.toggle('active',j===i));
+  const d=document.getElementById('pipelineDetail'),s=steps[i];
+  d.classList.remove('visible');
+  setTimeout(()=>{
+    document.getElementById('dTitle').textContent=s.title;
+    document.getElementById('dFile').textContent=s.file;
+    document.getElementById('dBody').textContent=s.body;
+    document.getElementById('dExports').innerHTML=s.exports.map(e=>`<span class="fn-tag">${e}</span>`).join('');
+    document.getElementById('dCode').innerHTML=s.code;
+    d.classList.add('visible');
+  },140);
+}
+
+// FLOW CANVAS
+const CONNS=[
+  ['fn-user','fn-parse'],['fn-user','fn-graph'],
+  ['fn-parse','fn-hybrid'],['fn-parse','fn-rules'],
+  ['fn-graph','fn-hybrid'],['fn-graph','fn-gcache'],
+  ['fn-gcache','fn-graph'],
+  ['fn-hybrid','fn-brain'],['fn-hybrid','fn-vcache'],
+  ['fn-vcache','fn-hybrid'],
+  ['fn-emb','fn-vcache'],
+  ['fn-rules','fn-brain'],
+  ['fn-brain','fn-validate'],
+  ['fn-validate','fn-diff'],
+  ['fn-diff','fn-files'],
+];
+
+function midX(el){return el.offsetLeft+el.offsetWidth/2}
+function midY(el){return el.offsetTop+el.offsetHeight/2}
+
+function drawFlow(){
+  const canvas=document.getElementById('flowCanvas');
+  const svg=document.getElementById('flowSvg');
+  svg.innerHTML=`<defs>
+    <marker id="arrowTip" markerWidth="7" markerHeight="5" refX="5" refY="2.5" orient="auto">
+      <polygon points="0 0,7 2.5,0 5" fill="rgba(244,241,235,.18)"/>
+    </marker>
+    <marker id="arrowTipGold" markerWidth="7" markerHeight="5" refX="5" refY="2.5" orient="auto">
+      <polygon points="0 0,7 2.5,0 5" fill="#c9a84c"/>
+    </marker>
+  </defs>`;
+  CONNS.forEach(([fid,tid])=>{
+    const a=document.getElementById(fid),b=document.getElementById(tid);
+    if(!a||!b)return;
+    const ax=midX(a),ay=midY(a),bx=midX(b),by=midY(b);
+    const dx=(bx-ax)*.38;
+    const p=document.createElementNS('http://www.w3.org/2000/svg','path');
+    p.setAttribute('d',`M${ax},${ay} C${ax+dx},${ay} ${bx-dx},${by} ${bx},${by}`);
+    p.setAttribute('class','flow-arrow');
+    p.setAttribute('marker-end','url(#arrowTip)');
+    p.dataset.from=fid;p.dataset.to=tid;
+    svg.appendChild(p);
+  });
+
+  document.querySelectorAll('.flow-node').forEach(node=>{
+    node.addEventListener('mouseenter',()=>{
+      const id=node.id;
+      svg.querySelectorAll('.flow-arrow').forEach(p=>{
+        const hi=p.dataset.from===id||p.dataset.to===id;
+        p.classList.toggle('hi',hi);
+        p.setAttribute('marker-end',hi?'url(#arrowTipGold)':'url(#arrowTip)');
+      });
+    });
+    node.addEventListener('mouseleave',()=>{
+      svg.querySelectorAll('.flow-arrow').forEach(p=>{
+        p.classList.remove('hi');
+        p.setAttribute('marker-end','url(#arrowTip)');
+      });
+    });
+  });
+}
+setTimeout(drawFlow,200);
+window.addEventListener('resize',drawFlow);
+
+// APPLY BUTTON
+function animateApply(btn){
+  btn.textContent='Applying…';btn.style.background='rgba(26,122,110,.22)';
+  setTimeout(()=>{btn.textContent='✓ Applied successfully';btn.style.color='var(--teal2)';btn.style.borderColor='var(--teal2)';},800);
+  setTimeout(()=>{btn.textContent='Apply Changes';btn.style.color='';btn.style.background='';btn.style.borderColor='';},2600);
+}
+</script>
+</body>
+</html>
